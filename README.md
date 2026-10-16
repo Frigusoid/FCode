@@ -27,4 +27,4 @@ FCode covers the whole iOS development loop on Windows, except the part where Ap
 
 What doesn't exist: a native Windows iOS toolchain. Apple ships clang, ld64, codesign only for macOS. So compilation goes through xtool inside WSL.
 
-FCode was built with DeepSeek V4.1 Flash over one week
+FCode was built with DeepSeek V4.1 Flash over one week -- about 10$
