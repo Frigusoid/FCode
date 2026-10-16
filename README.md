@@ -4,7 +4,7 @@ An Xcode-like IDE for Windows: write Swift/SwiftUI, build .ipa via xtool in WSL,
   <img src="github/Fcode.gif" width="566" alt="Fcode logo">
 </div>
 
-#	What	Where
+#	First run
 1	wsl --install --no-distribution, reboot	PowerShell (admin)
 2	wsl --install -d Ubuntu	PowerShell
 3	Swift 6.1	Ubuntu
@@ -15,7 +15,7 @@ An Xcode-like IDE for Windows: write Swift/SwiftUI, build .ipa via xtool in WSL,
 8	xtool setup → Password mode → path to Xcode.xip	Ubuntu
 9	xtool auth	Ubuntu
 
-What is this?
+#What is this?
 
 FCode covers the whole iOS development loop on Windows, except the part where Apple's toolchain is physically required.
 
@@ -26,3 +26,5 @@ FCode covers the whole iOS development loop on Windows, except the part where Ap
     No Mac needed at any step
 
 What doesn't exist: a native Windows iOS toolchain. Apple ships clang, ld64, codesign only for macOS. So compilation goes through xtool inside WSL.
+
+FCode was built with DeepSeek V4.1 Flash over one week
