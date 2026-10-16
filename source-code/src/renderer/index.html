@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self';"
+    />
+    <title>Fcode</title>
+    <link rel="icon" href="favicon.png" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <!-- Затенение на время долгих операций: только значок, без рамки и текста -->
+    <div id="busy-overlay" class="busy-overlay hidden">
+      <img id="busy-image" class="busy-image" src="loading.gif" alt="" />
+    </div>
+
+    <div class="app">
+      <!-- Top bar, Xcode-style: scheme, destination, actions -->
+      <header class="toolbar">
+        <div class="toolbar-group">
+          <button id="btn-open" class="tb-btn" data-i18n-title="toolbar.openTitle">
+            <span class="ico" data-icon="open" data-fallback="📂"></span> <span data-i18n="toolbar.open">Open</span>
+          </button>
+          <button id="btn-new-project" class="tb-btn" data-i18n-title="toolbar.newProjectTitle">
+            <span class="ico" data-icon="new-project" data-fallback="＋"></span> <span data-i18n="toolbar.newProject">Project</span>
+          </button>
+          <div class="tb-sep"></div>
+          <button id="btn-save" class="tb-btn ghost" data-i18n-title="file.save">
+            <span class="ico" data-icon="save" data-fallback="💾"></span>
+          </button>
+          <button id="btn-save-all" class="tb-btn ghost" data-i18n-title="file.saveAll">
+            <span class="ico" data-icon="save-all" data-fallback="🗃"></span>
+          </button>
+          <div class="tb-sep"></div>
+          <label class="field">
+            <span class="field-label" data-i18n="toolbar.scheme">Scheme</span>
+            <select id="scheme-select" class="field-input">
+              <option value="" data-i18n="toolbar.noProject">— no project open —</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label" data-i18n="toolbar.destination">Destination</span>
+            <select id="device-select" class="field-input">
+              <option data-i18n="toolbar.device">Any iOS Device (arm64)</option>
+              <option data-i18n="toolbar.simulator">iOS Simulator</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="toolbar-group toolbar-right">
+          <button id="btn-xtool" class="tb-btn" data-i18n-title="toolbar.linuxTitle">
+            <span class="ico" data-icon="linux" data-fallback="🐧"></span> <span data-i18n="toolbar.linux">Linux Build</span>
+          </button>
+          <button id="btn-pick-archive" class="tb-btn" data-i18n-title="toolbar.archiveTitle">
+            <span class="ico" data-icon="archive" data-fallback="🗄"></span> <span data-i18n="toolbar.archive">Archive</span>
+          </button>
+          <button id="btn-pick-archive-folder" class="tb-btn ghost" data-i18n-title="toolbar.archiveFolderTitle">
+            <span class="ico" data-icon="folder-open" data-fallback="🗀"></span>
+          </button>
+          <button id="btn-build" class="tb-btn primary" data-i18n-title="toolbar.buildTitle">
+            <span class="ico" data-icon="build" data-fallback="▶"></span> <span data-i18n="toolbar.build">Build .ipa</span>
+          </button>
+          <button id="btn-verify" class="tb-btn" data-i18n-title="toolbar.verifyTitle">
+            <span class="ico" data-icon="verify" data-fallback="✓"></span> <span data-i18n="toolbar.verify">Verify</span>
+          </button>
+          <button id="btn-convert" class="tb-btn" data-i18n-title="toolbar.convertTitle">
+            <span class="ico" data-icon="convert" data-fallback="⇄"></span> <span data-i18n="toolbar.convert">Convert</span>
+          </button>
+          <div class="tb-sep"></div>
+          <button id="btn-lsp" class="tb-btn ghost" data-i18n-title="lsp.restart">
+            <span class="ico" data-icon="reload" data-fallback="↻"></span>
+          </button>
+          <button id="btn-settings" class="tb-btn ghost" data-i18n-title="settings.title">
+            <span class="ico" data-icon="settings" data-fallback="⚙"></span>
+          </button>
+        </div>
+      </header>
+
+      <!-- Packaging progress -->
+      <div id="progress" class="progress hidden">
+        <div id="progress-bar" class="progress-bar"></div>
+        <span id="progress-text" class="progress-text"></span>
+      </div>
+
+      <main class="body">
+        <!-- Navigator -->
+        <aside class="sidebar">
+          <div class="sidebar-head">
+            <span id="project-name" class="sidebar-title" data-i18n="tree.notOpen">No project open</span>
+            <button id="btn-refresh" class="icon-btn" data-i18n-title="tree.refresh"><span class="ico" data-icon="refresh" data-fallback="⟳"></span></button>
+          </div>
+          <div class="sidebar-tabs">
+            <button id="tab-files" class="sidebar-tab active" data-i18n="sidebar.files">Files</button>
+            <button id="tab-search" class="sidebar-tab" data-i18n="sidebar.search">Search</button>
+            <button id="tab-problems" class="sidebar-tab">
+              <span data-i18n="sidebar.problems">Problems</span>
+              <span id="problems-badge" class="badge hidden"></span>
+            </button>
+          </div>
+          <div id="project-kind" class="project-kind"></div>
+          <div id="projects" class="projects hidden"></div>
+          <div id="tree" class="tree"></div>
+          <div id="problems" class="problems hidden"></div>
+
+          <div id="search" class="search hidden">
+            <div class="search-row">
+              <input id="search-input" class="search-input" autocomplete="off" spellcheck="false" />
+            </div>
+            <div class="search-options">
+              <button id="search-case" class="opt-btn" data-i18n-title="search.caseSensitive">Aa</button>
+              <button id="search-word" class="opt-btn" data-i18n-title="search.wholeWord">ab</button>
+              <button id="search-regex" class="opt-btn" data-i18n-title="search.regex">.*</button>
+              <button id="search-replace-toggle" class="opt-btn" data-i18n-title="search.replaceMode">⇄</button>
+            </div>
+            <div id="search-replace-row" class="search-row hidden">
+              <input id="search-replacement" class="search-input" autocomplete="off" spellcheck="false" />
+              <button id="search-replace-all" class="tb-btn small" data-i18n="search.replaceAll">All</button>
+            </div>
+            <div id="search-summary" class="search-summary"></div>
+            <div id="search-results" class="search-results"></div>
+          </div>
+        </aside>
+
+        <!-- Editor -->
+        <section class="editor-area">
+          <div id="tabs" class="tabs"></div>
+          <div id="editor-host" class="editor-host"></div>
+          <div id="welcome" class="welcome">
+            <div class="welcome-inner">
+              <div class="welcome-logo">Fcode</div>
+              <p class="welcome-sub" data-i18n="welcome.subtitle">An environment for iOS projects on Windows</p>
+
+              <div class="welcome-actions">
+                <button id="welcome-new" class="tb-btn primary big" data-i18n="welcome.createProject">
+                  Create project
+                </button>
+                <button id="welcome-open" class="tb-btn big" data-i18n="welcome.openFolder">
+                  Open project folder
+                </button>
+              </div>
+
+              <div class="welcome-note">
+                <strong data-i18n="welcome.whatTitle">What Fcode does by itself:</strong>
+                <span data-i18n-html="welcome.whatBody"></span>
+                <br />
+                <strong data-i18n="welcome.notTitle">What it does not do:</strong>
+                <span data-i18n-html="welcome.notBody"></span>
+                <button id="welcome-limits" class="link-btn" data-i18n="welcome.more">Details</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Inspector: archive and build details -->
+        <aside id="inspector" class="inspector hidden">
+          <div class="inspector-head">
+            <span id="inspector-title" data-i18n="inspector.title">Details</span>
+            <button id="btn-inspector-close" class="icon-btn" data-i18n-title="inspector.close"><span class="ico" data-icon="close" data-fallback="✕"></span></button>
+          </div>
+          <div id="inspector-body" class="inspector-body"></div>
+        </aside>
+
+        <!-- Build without Xcode: xtool inside the Linux subsystem -->
+        <aside id="linux-panel" class="linux-panel hidden">
+          <div class="inspector-head">
+            <span data-i18n="linux.title">Linux Build · xtool</span>
+            <span>
+              <button id="btn-linux-help" class="icon-btn" data-i18n-title="linux.help"><span class="ico" data-icon="help" data-fallback="?"></span></button>
+              <button id="btn-linux-close" class="icon-btn" data-i18n-title="modal.close"><span class="ico" data-icon="close" data-fallback="✕"></span></button>
+            </span>
+          </div>
+
+          <div class="linux-actions">
+            <button id="btn-linux-run" class="tb-btn small run" data-i18n-title="linux.runAllTitle" data-i18n="linux.runAll">Run</button>
+            <button id="btn-setup-guide" class="tb-btn small primary" data-i18n="guide.more">How to install</button>
+            <button id="btn-about" class="tb-btn small" data-i18n="about.menu">About</button>
+            <button id="btn-linux-requirements" class="tb-btn small" data-i18n="req.button">Requirements</button>
+            <button id="btn-linux-refresh" class="tb-btn small" data-i18n="linux.check">Check</button>
+            <button id="btn-linux-new" class="tb-btn small" data-i18n="linux.newProject">New project</button>
+            <button id="btn-linux-build" class="tb-btn small primary" data-i18n="linux.build">Build</button>
+            <button id="btn-linux-install" class="tb-btn small" data-i18n="linux.install">Install .ipa</button>
+            <button id="btn-linux-devices" class="tb-btn small" data-i18n="linux.devices">Devices</button>
+          </div>
+
+          <div class="linux-actions linux-actions-account">
+            <button id="btn-account" class="tb-btn small" data-i18n="account.title">Apple account</button>
+            <button id="btn-ds-certificates" class="tb-btn small" data-i18n="account.certificates">Certificates</button>
+            <button id="btn-ds-profiles" class="tb-btn small" data-i18n="account.profiles">Profiles</button>
+            <button id="btn-ds-devices" class="tb-btn small" data-i18n="account.devices">Devices</button>
+            <button id="btn-ios-sdk" class="tb-btn small" data-i18n="sdk.title">iOS SDK</button>
+            <button id="btn-sideloadly" class="tb-btn small" data-i18n="sideloadly.install">Sideloadly</button>
+            <button id="btn-zsign" class="tb-btn small" data-i18n="zsign.title">Sign .ipa</button>
+          </div>
+
+          <button id="btn-xcode-project" class="tb-btn wide hidden">Xcode project</button>
+
+          <div id="linux-summary" class="linux-summary" data-i18n="linux.notChecked">Not checked yet</div>
+          <div id="linux-steps" class="linux-steps"></div>
+        </aside>
+      </main>
+
+      <!-- Build console -->
+      <footer class="console">
+        <div class="console-head">
+          <span class="console-title" data-i18n="console.title">Console</span>
+          <span id="status-pill" class="status-pill" data-i18n="status.ready">ready</span>
+          <div class="console-actions">
+            <button id="btn-clear-console" class="icon-btn" data-i18n="console.clear">Clear</button>
+          </div>
+        </div>
+        <div id="console-output" class="console-output"></div>
+      </footer>
+    </div>
+
+    <!-- Modal dialogs -->
+    <div id="modal" class="modal hidden">
+      <div class="modal-box">
+        <div class="modal-head">
+          <span id="modal-title">—</span>
+          <button id="modal-close" class="icon-btn" data-i18n-title="modal.close"><span class="ico" data-icon="close" data-fallback="✕"></span></button>
+        </div>
+        <div id="modal-body" class="modal-body"></div>
+        <div id="modal-foot" class="modal-foot"></div>
+      </div>
+    </div>
+
+    <script src="dist/bundle.js"></script>
+  </body>
+</html>
