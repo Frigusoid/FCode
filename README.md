@@ -4,9 +4,6 @@ An Xcode-like IDE for Windows: write Swift/SwiftUI, build `.ipa` via xtool in WS
 
 <div align="center">
   <img src="github/Fcode.gif" width="566" alt="FCode demo">
-  
-  <p><b>Building example</b></p>
-  <video src="https://github.com/user-attachments/assets/f99ef03e-98b7-4168-a715-0c893a9e0ae8" width="566" controls></video>
 </div>
 
 ## First run
@@ -36,3 +33,9 @@ What doesn't exist: a native Windows iOS toolchain. Apple ships `clang`, `ld64`,
 ---
 
 *FCode was built with DeepSeek V4.1 Flash over one week — about $10 total.*
+
+## Building example
+
+<div align="center">
+  <video src="https://github.com/user-attachments/assets/f99ef03e-98b7-4168-a715-0c893a9e0ae8" width="566" controls></video>
+</div>
