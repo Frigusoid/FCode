@@ -527,11 +527,23 @@ swift sdk list 2>&1 | head -5
  */
 async function installSdk(sdkPath, options = {}) {
   const distroName = options.distro || xtool.DEFAULT_DISTRO;
-  const quoted = `'${String(sdkPath).replace(/'/g, "'\\''")}'`;
+
+  // Путь приходит из Windows-диалога («D:\Xcode_16.4.xip»), а команду
+  // выполняет bash внутри Linux, где такого пути нет: нужен /mnt/d/…
+  // Без перевода xtool отвечал «Could not read file or directory».
+  const linuxPath = xtool.toWslPath(sdkPath);
+  const quoted = xtool.shellQuote(linuxPath);
 
   const script = `
 set -e
 command -v xtool >/dev/null 2>&1 || { echo "xtool не найден"; exit 2; }
+
+# Проверяем, что архив действительно виден из Linux: так ошибка будет
+# понятной, а не «Could not read file or directory» из недр xtool.
+if [ ! -e ${quoted} ]; then
+  echo "SDK_SOURCE_NOT_FOUND:${linuxPath}"
+  exit 5
+fi
 
 # Проверяем, понимает ли установленная версия флаг --slim.
 if xtool sdk install --help 2>&1 | grep -q -- '--slim'; then

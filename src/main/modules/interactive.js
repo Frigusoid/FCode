@@ -17,6 +17,7 @@
 
 const { spawn } = require('child_process');
 const { t } = require('../../shared/i18n');
+const { WSL_ENV, decodeChunk } = require('./wsl-exec');
 
 /** Похож ли хвост вывода на приглашение ко вводу. */
 function looksLikePrompt(tail) {
@@ -56,13 +57,25 @@ class InteractiveSession {
     this.child = spawn(
       'wsl.exe',
       ['-d', this.distro, '--', 'bash', '-lc', this.command],
-      { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] },
+      { windowsHide: true, env: WSL_ENV, stdio: ['pipe', 'pipe', 'pipe'] },
     );
 
     const consume = (chunk) => {
-      const text = chunk.toString('utf8');
+      // WSL_UTF8 переводит сам wsl.exe на UTF-8; decodeChunk дополнительно
+      // распознаёт UTF-16LE, если старая сборка WSL его всё же выдала.
+      const text = decodeChunk(chunk);
       this.buffer += text;
+      this.lastOutputAt = Date.now();
       this.onOutput(text);
+
+      // Строка «Error: …» означает окончательный отказ: xtool её печатает,
+      // когда сервер Apple уже ответил. Процесс после этого может не выйти
+      // сам (например, если WSL завис), и окно оставалось бы «в работе»
+      // навсегда. Даём договорить остаток и завершаем сессию сами.
+      if (/^\s*error[:!]/im.test(text)) {
+        this.failSoon(text);
+        return;
+      }
 
       const tail = this.buffer.slice(this.buffer.lastIndexOf('\n') + 1);
       if (looksLikePrompt(tail)) {
@@ -99,6 +112,51 @@ class InteractiveSession {
       this.onOutput(`\n${t('auth.timeout')}\n`);
       this.cancel();
     }, this.timeout);
+
+    // Отдельный сторож простоя: если программа молчит слишком долго и при
+    // этом ничего не спрашивает, сессия считается зависшей. Без него окно
+    // входа оставалось в состоянии «в работе» бесконечно.
+    this.lastOutputAt = Date.now();
+    this.stallTimer = setInterval(() => {
+      if (this.finished) return;
+      const silentFor = Date.now() - this.lastOutputAt;
+      if (silentFor > this.stallAfter && !this.pendingPrompt) {
+        this.onOutput(`\n${t('auth.stalled')}\n`);
+        this.finish({ ok: false, code: null, error: 'stalled' });
+        this.killChild();
+      }
+    }, 5000);
+  }
+
+  /**
+   * Завершить сессию как неудачную, дав программе договорить.
+   *
+   * Apple отвечает ошибкой в тот момент, когда процесс ещё жив: wsl.exe может
+   * не выйти сам, и тогда событие close не приходит. Ждём короткую паузу,
+   * чтобы собрать остаток вывода, и закрываем сессию самостоятельно.
+   */
+  failSoon(text) {
+    if (this.failTimer) return;
+    this.failTimer = setTimeout(() => {
+      if (this.finished) return;
+      this.finish({ ok: false, code: 1, error: 'reported' });
+      this.killChild();
+    }, 1500);
+    // Пауза не должна зависеть от дальнейшего вывода.
+    if (this.failTimer.unref) this.failTimer.unref();
+    return text;
+  }
+
+  /** Погасить процесс, не трогая уже завершённую сессию. */
+  killChild() {
+    const child = this.child;
+    this.child = null;
+    if (!child) return;
+    try {
+      child.kill();
+    } catch {
+      /* уже завершился */
+    }
   }
 
   /** Ответить на текущее приглашение. */

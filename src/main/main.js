@@ -642,15 +642,19 @@ function aboutInfo() {
   // Без этого интерфейс приписывал «\Xcode.app» к любой выбранной папке.
   handle('sdk:resolveSource', (_event, selected) => requirements.resolveSdkSource(selected));
 
-  // Выбор самого архива Xcode: .xip или папки Xcode.app.
-  // Отдельно от chooseFolder, потому что пользователю нужно указать файл,
-  // а не папку — раньше вставить путь к скачанному .xip было некуда.
+  // Выбор самого архива Xcode: только файл .xip.
+  //
+  // Важно: нельзя указывать properties и 'openFile', и 'openDirectory'
+  // одновременно — на Windows такой диалог открывается как выбор ПАПКИ,
+  // и выбрать скачанный .xip невозможно.
   handle('sdk:chooseFile', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: t('sdk.pickTitle'),
-      // Можно выбрать и файл .xip, и папку с уже распакованным Xcode.app.
-      properties: ['openFile', 'openDirectory'],
-      filters: [{ name: 'Xcode', extensions: ['xip'] }],
+      properties: ['openFile'],
+      filters: [
+        { name: 'Xcode (.xip)', extensions: ['xip'] },
+        { name: t('dialog.allFiles'), extensions: ['*'] },
+      ],
       buttonLabel: t('sdk.choose'),
     });
     if (result.canceled || result.filePaths.length === 0) return null;
@@ -668,6 +672,13 @@ function aboutInfo() {
       slim: settings.slim !== false,
       onOutput: (text) => send('xtool:output', { stream: 'build', text }),
     });
+
+    // Скрипт проверяет, что архив виден из Linux. Если нет — сообщаем прямо,
+    // иначе пользователь видит только «exit code 5».
+    const notFound = /SDK_SOURCE_NOT_FOUND:(.+)/.exec(result.output || '');
+    if (notFound) {
+      throw new Error(t('sdk.notVisible', { path: notFound[1].trim() }));
+    }
 
     return { ok: result.ok, code: result.code };
   });
