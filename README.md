@@ -4,6 +4,9 @@ An Xcode-like IDE for Windows: write Swift/SwiftUI, build `.ipa` via xtool in WS
 
 <div align="center">
   <img src="github/Fcode.gif" width="566" alt="FCode demo">
+  
+  <p><b>Building example</b></p>
+  <video src="https://github.com/user-attachments/assets/f99ef03e-98b7-4168-a715-0c893a9e0ae8" width="566" controls></video>
 </div>
 
 ## First run
