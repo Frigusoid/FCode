@@ -1,0 +1,86 @@
+{
+  "name": "fcode",
+  "productName": "Fcode",
+  "version": "0.0.2",
+  "private": true,
+  "author": "Frigusoid",
+  "license": "MIT",
+  "description": "Fcode — среда для сборки iOS-приложений на Windows: редактор Swift, диагностика компилятора, упаковка .ipa. Без Mac.",
+  "main": "src/main/main.js",
+  "scripts": {
+    "build:renderer": "node scripts/build-renderer.mjs",
+    "watch:renderer": "node scripts/build-renderer.mjs --watch",
+    "start": "node scripts/build-renderer.mjs && electron .",
+    "test": "node --test \"test/*.test.js\"",
+    "setup:wsl": "node scripts/setup-wsl.cjs",
+    "check-archive": "node scripts/check-archive.cjs",
+    "icons": "python scripts/make-icons.py",
+    "dist": "node scripts/build-renderer.mjs && electron-builder"
+  },
+  "build": {
+    "appId": "com.fcode.app",
+    "productName": "Fcode",
+    "copyright": "Frigusoid",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/main/**/*",
+      "src/shared/**/*",
+      "src/renderer/index.html",
+      "src/renderer/styles.css",
+      "src/renderer/favicon.png",
+      "src/renderer/loading.gif",
+      "src/renderer/dist/bundle.js",
+      "src/renderer/icons/**/*",
+      "build/icon.png",
+      "build/icon.ico",
+      "package.json",
+      "!**/*.map"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "Fcode-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "Fcode",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "portable": {
+      "artifactName": "Fcode-${version}-portable.${ext}"
+    }
+  },
+  "devDependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/commands": "^6.6.2",
+    "@codemirror/language": "^6.10.3",
+    "@codemirror/legacy-modes": "^6.4.1",
+    "@codemirror/lint": "^6.9.7",
+    "@codemirror/search": "^6.5.6",
+    "@codemirror/state": "^6.4.1",
+    "@codemirror/view": "^6.34.1",
+    "@lezer/highlight": "^1.2.1",
+    "electron": "^33.0.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.24.0"
+  }
+}
