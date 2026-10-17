@@ -12,13 +12,13 @@ An Xcode-like IDE for Windows: write Swift/SwiftUI, build `.ipa` via xtool in WS
 | :--- | :--- | :--- |
 | 1 | `wsl --install --no-distribution`, reboot | PowerShell (admin) |
 | 2 | `wsl --install -d Ubuntu` | PowerShell |
-| 3 | Install Swift 6.1 | Ubuntu |
-| 4 | `sudo apt-get install -y usbmuxd libimobiledevice-utils` | Ubuntu |
-| 5 | Download xtool AppImage | Ubuntu |
+| 3 | Install Swift 6.1 | WSL |
+| 4 | `sudo apt-get install -y usbmuxd libimobiledevice-utils` | WSL |
+| 5 | Download xtool AppImage | WSL |
 | 6 | `winget install usbipd` + `usbipd attach --wsl` | PowerShell |
 | 7 | Xcode.xip (~10 GB) from [developer.apple.com](https://download.developer.apple.com/Developer_Tools/Xcode_16.4/Xcode_16.4.xip) | Windows |
-| 8 | `xtool setup` → Password mode → path to `Xcode.xip` | Ubuntu |
-| 9 | `xtool auth` | Ubuntu |
+| 8 | `xtool setup` → Password mode → path to `Xcode.xip` | WSL |
+| 9 | `xtool auth` | WSL |
 
 ## What is this?
 
