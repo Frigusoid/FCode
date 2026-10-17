@@ -2,6 +2,12 @@
 
 An Xcode-like IDE for Windows: write Swift/SwiftUI, build `.ipa` via xtool in WSL, no Mac required.
 
+> [!WARNING]
+> **EARLY DEVELOPMENT STAGE.** 
+> This is **not** a full Xcode replacement. 
+> Expect bugs, missing features, and a manual setup process.  
+> No Simulator.
+
 <div align="center">
   <img src="github/Fcode.gif" width="566" alt="FCode demo">
 </div>
