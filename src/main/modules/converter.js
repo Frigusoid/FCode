@@ -504,7 +504,9 @@ function downloadPackage(url, name, options = {}) {
     : target.replace(/\\/g, '/');
 
   try {
-    execFileSync('wsl.exe', ['-d', 'Ubuntu', '-u', 'frigus', '--', 'bash', '-lc',
+    // Без -u: имя пользователя в WSL у каждого своё (frigus, frigusoid, любое),
+    // а зашитое имя даёт «WSL_E_USER_NOT_FOUND» и молча ломает загрузку пакета.
+    execFileSync('wsl.exe', ['-d', 'Ubuntu', '--', 'bash', '-lc',
       `set -e; mkdir -p "$(dirname '${linuxPath}')"; rm -rf '${linuxPath}'; ` +
       `git clone --depth 1 '${url}' '${linuxPath}' 2>&1 | tail -2`,
     ], { stdio: 'pipe', timeout: 180000 });

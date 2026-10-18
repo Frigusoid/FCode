@@ -174,37 +174,49 @@ async function collect(options = {}) {
 
   // --- iOS SDK ---
   const sdk = inside.swiftSdk || {};
+  // Имя бандла задаёт xtool, поэтому ориентируемся на факт установки, а не на
+  // слово darwin: иначе на машине с другим именем строка не появлялась вовсе.
+  const sdkInstalled = Boolean(sdk.installed || sdk.hasDarwin);
+
   rows.push({
     id: 'ios-sdk',
     title: 'iOS SDK',
     required: `Xcode ${REQUIRED.xcode}+`,
-    found: sdk.hasDarwin ? 'SDK darwin зарегистрирован' : null,
-    ok: Boolean(sdk.hasDarwin),
+    found: sdkInstalled ? `зарегистрирован: ${(sdk.list || '').trim() || 'SDK'}` : null,
+    ok: sdkInstalled,
     hint: 'Без него компилятор не видит SwiftUI и UIKit — собирать можно только под Linux.',
-    command: sdk.hasDarwin ? null : null,
+    command: null,
     action: 'sdk',
   });
 
   // Отдельная строка: SDK стоит, но системе его не отдали. Такое молча ломает
   // сборку ошибкой «No Swift SDK found matching query arm64-apple-ios».
-  if (sdk.hasDarwin) {
+  if (sdkInstalled) {
     const triples = sdk.triples || [];
     const host = sdk.hostTriple;
-    const registered = Boolean(host) && triples.includes(host);
+    const targets = sdk.targetTriples || [];
+    const hostOk = Boolean(host) && triples.includes(host);
+    const targetOk = targets.includes('arm64-apple-ios');
+    const registered = hostOk && targetOk;
+
+    // Что именно не так — по частям, иначе непонятно, что чинить.
+    const missing = [];
+    if (!hostOk) missing.push(`host ${host || '?'}`);
+    if (!targetOk) missing.push('arm64-apple-ios');
 
     rows.push({
       id: 'ios-sdk-host',
       title: 'SDK для этой системы',
-      required: host ? `triple ${host}` : 'triple системы',
+      required: `цель arm64-apple-ios, хост ${host || '?'}`,
       found: registered
         ? 'зарегистрирован'
-        : triples.length
-          ? `объявлены: ${triples.join(', ')}`
-          : null,
+        : `не хватает: ${missing.join(', ')}`,
       ok: registered,
       hint:
-        'Бандл SDK собран под другие triple, поэтому компилятор его не находит. '
-        + 'Кнопка ниже дописывает triple вашей системы в info.json — пересобирать ничего не нужно.',
+        'SwiftPM ищет SDK по двум условиям: triple хоста в info.json и triple цели '
+        + 'arm64-apple-ios в swift-sdk.json. Имя «darwin» в списке swift sdk list — '
+        + 'это имя бандла, а не triple, поэтому оно ничего не гарантирует. '
+        + 'Кнопка ниже дописывает недостающее.',
       command: null,
       action: registered ? null : 'fix-sdk-host',
     });
@@ -457,25 +469,37 @@ function wslLocation() {
 }
 
 /**
- * Прописать реальный host triple системы в info.json бандла SDK.
+ * Починить бандл Swift SDK, чтобы компилятор его нашёл.
  *
- * Это самая незаметная и самая частая причина, по которой сборка не идёт на
- * новой машине. xtool строит бандл под triple вида `x86_64-unknown-linux-gnu`,
- * а Swift из репозитория Ubuntu представляется как `x86_64-pc-linux-gnu`.
- * `swift sdk list` при этом показывает `darwin` и создаёт впечатление, что всё
- * готово, а сборка падает с «No Swift SDK found matching query arm64-apple-ios».
+ * SwiftPM ищет SDK по ДВУМ условиям, и достаточно провалить любое:
  *
- * Лечится добавлением недостающей строки в supportedTriples. Скрипт идёт через
- * wsl-exec, который сам кодирует его в base64, поэтому кавычки не ломаются.
+ *   1. `info.json` → artifacts.*.variants[].supportedTriples должен содержать
+ *      triple ХОСТА (машины, где идёт сборка), например x86_64-pc-linux-gnu.
+ *      xtool пишет туда x86_64-unknown-linux-gnu, а Swift из Ubuntu
+ *      представляется как x86_64-pc-linux-gnu — они не совпадают.
+ *
+ *   2. `swift-sdk.json` → targetTriples должен содержать triple ЦЕЛИ,
+ *      то есть arm64-apple-ios. Именно из-за его отсутствия xtool пишет
+ *      «No Swift SDK found matching query arm64-apple-ios».
+ *
+ * `swift sdk list` при этом показывает `darwin` — имя бандла, а не triple,
+ * поэтому кажется, что всё на месте.
+ *
+ * Скрипт проверяет оба условия и дописывает недостающее. Если в бандле нет
+ * самой платформы iPhoneOS, честно сообщает об этом: тогда SDK нужно собрать
+ * заново, а не править манифест.
  */
 async function repairSdkHostTriple(options = {}) {
   const distroName = options.distro || xtool.DEFAULT_DISTRO;
 
   const script = `
 set -e
-BUNDLE="$HOME/.swiftpm/swift-sdks/darwin.artifactbundle"
+# Имя бандла не фиксируем: xtool может назвать его darwin, ios или иначе.
+# Раньше здесь стояло жёсткое darwin.artifactbundle, и на машине с другим
+# именем починка молча ничего не делала.
+SDK_DIR="$HOME/.swiftpm/swift-sdks"
 
-if [ ! -d "$BUNDLE" ]; then
+if ! ls "$SDK_DIR"/*.artifactbundle >/dev/null 2>&1; then
   echo "SDK_NOT_INSTALLED"
   exit 3
 fi
@@ -488,28 +512,88 @@ fi
 
 echo "host=$HOST"
 
-python3 - "$BUNDLE/info.json" "$HOST" <<'PY'
-import json, sys
+for BUNDLE in "$SDK_DIR"/*.artifactbundle; do
+  echo "bundle=$(basename "$BUNDLE")"
+  python3 - "$BUNDLE" "$HOST" <<'PY'
+import glob
+import json
+import os
+import sys
 
-path, host = sys.argv[1], sys.argv[2]
-with open(path, encoding='utf-8') as handle:
-    data = json.load(handle)
+bundle, host = sys.argv[1], sys.argv[2]
+changes = []
+problems = []
 
-added = []
-for artifact in data.get('artifacts', {}).values():
-    for variant in artifact.get('variants', []):
-        triples = variant.setdefault('supportedTriples', [])
-        if host not in triples:
-            triples.append(host)
-            added.append(host)
+# --- 1. info.json: triple хоста ---
+info_path = os.path.join(bundle, 'info.json')
+if os.path.exists(info_path):
+    with open(info_path, encoding='utf-8') as handle:
+        info = json.load(handle)
 
-if added:
-    with open(path, 'w', encoding='utf-8') as handle:
-        json.dump(data, handle, indent=4, ensure_ascii=False)
+    touched = False
+    for artifact in info.get('artifacts', {}).values():
+        for variant in artifact.get('variants', []):
+            triples = variant.setdefault('supportedTriples', [])
+            if host not in triples:
+                triples.append(host)
+                touched = True
+                changes.append('info:' + host)
+
+    if touched:
+        with open(info_path, 'w', encoding='utf-8') as handle:
+            json.dump(info, handle, indent=4, ensure_ascii=False)
+            handle.write('\\n')
+else:
+    problems.append('нет info.json')
+
+# --- 2. swift-sdk.json: triple цели ---
+sdk_path = os.path.join(bundle, 'swift-sdk.json')
+if not os.path.exists(sdk_path):
+    print('NO_SWIFT_SDK_JSON')
+    sys.exit(6)
+
+with open(sdk_path, encoding='utf-8') as handle:
+    sdk = json.load(handle)
+
+targets = sdk.setdefault('targetTriples', {})
+want = 'arm64-apple-ios'
+
+print('targets=' + ','.join(sorted(targets.keys())))
+
+if want not in targets:
+    roots = sorted(glob.glob(os.path.join(
+        bundle, 'Developer/Platforms/iPhoneOS.platform/Developer/SDKs/*.sdk')))
+    sim = targets.get('arm64-apple-ios-simulator') or {}
+
+    if roots:
+        sdk_root = os.path.relpath(roots[0], bundle)
+        usr = 'Developer/Platforms/iPhoneOS.platform/Developer/usr'
+        targets[want] = {
+            'sdkRootPath': sdk_root,
+            'swiftStaticResourcesPath': sim.get(
+                'swiftStaticResourcesPath',
+                'Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift_static'),
+            'includeSearchPaths': [usr + '/lib'],
+            'librarySearchPaths': [usr + '/lib'],
+            'swiftResourcesPath': sim.get(
+                'swiftResourcesPath',
+                'Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift'),
+            'toolsetPaths': ['toolset.json'],
+        }
+        changes.append('target:' + want)
+        print('added_root=' + sdk_root)
+    else:
+        problems.append('в бандле нет iPhoneOS.platform — SDK собран неполно')
+
+    with open(sdk_path, 'w', encoding='utf-8') as handle:
+        json.dump(sdk, handle, ensure_ascii=False)
         handle.write('\\n')
 
-print('added' if added else 'already')
+print('changes=' + (','.join(changes) if changes else 'none'))
+if problems:
+    print('problems=' + '; '.join(problems))
 PY
+done
 
 echo "--- проверка ---"
 swift sdk list 2>&1 | head -5
@@ -666,7 +750,10 @@ async function setupGuide(options = {}) {
   const sideloadly = findSideloadly();
 
   const swiftVersion = (inside.swift && inside.swift.version) || null;
-  const sdkReady = Boolean(inside.swiftSdk && inside.swiftSdk.hasDarwin);
+  // Имя бандла задаёт xtool, поэтому проверяем сам факт установки.
+  const sdkReady = Boolean(
+    inside.swiftSdk && (inside.swiftSdk.installed || inside.swiftSdk.hasDarwin),
+  );
 
   const steps = [];
 

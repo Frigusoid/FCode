@@ -26,6 +26,7 @@ const swift = require('./modules/swift');
 const requirements = require('./modules/requirements');
 const xcode = require('./modules/xcode');
 const converter = require('./modules/converter');
+const icon = require('./modules/icon');
 const zsign = require('./modules/zsign');
 const setup = require('./modules/setup');
 const i18n = require('../shared/i18n');
@@ -686,18 +687,96 @@ function aboutInfo() {
   // --- сборка без Xcode: xtool в подсистеме Linux ---
   handle('xtool:check', (_event, distro) => xtool.checkEnvironment(distro));
 
+  // Выбор картинки для иконки приложения.
+  handle('icon:choose', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: t('icon.chooseTitle'),
+      properties: ['openFile'],
+      filters: [{ name: 'PNG', extensions: ['png'] }],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
+
+  // Встроить иконку в уже готовый .ipa (на случай, если сборка была раньше).
+  handle('icon:apply', async (_event, options) => {
+    const settings = options || {};
+    if (!settings.ipaPath) throw new Error(t('main.noIpaPath'));
+    if (!settings.iconPath) throw new Error(t('icon.needFile'));
+    return icon.applyToIpa({
+      ipaPath: settings.ipaPath,
+      iconPath: settings.iconPath,
+      distro: settings.distro,
+      onOutput: (text) => send('xtool:output', { stream: 'build', text }),
+    });
+  });
+
   handle('xtool:build', async (_event, options) => {
     if (!options || !options.projectPath) throw new Error(t('main.noProjectPath'));
     send('xtool:output', {
       stream: 'meta',
       text: t('main.xtoolStarting', { distro: options.distro || xtool.DEFAULT_DISTRO }),
     });
+
+    // Именно этот путь запускает кнопка Build .ipa. Без проверки SDK сборка
+    // падает с «No Swift SDK found matching query arm64-apple-ios», хотя
+    // `swift sdk list` показывает darwin и всё выглядит исправным.
+    const fixed = await ensureSwiftSdk(options.distro, (text) =>
+      send('xtool:output', { stream: 'build', text }),
+    );
+    if (fixed && fixed.changed.length) {
+      send('xtool:output', {
+        stream: 'meta',
+        text: `${t('build.sdkRepaired', { list: fixed.changed.join(', ') })}\n`,
+      });
+    } else if (fixed && !fixed.problems.length) {
+      // Строка нужна, чтобы было видно: проверка вообще выполнялась.
+      send('xtool:output', {
+        stream: 'meta',
+        text: `${t('build.sdkChecked', { state: t('build.sdkOk') })}\n`,
+      });
+    }
+    if (fixed && fixed.problems.length) {
+      // Честно говорим, что починить нельзя: неполный бандл SDK.
+      send('xtool:output', {
+        stream: 'meta',
+        text: `${t('build.sdkProblem', { list: fixed.problems.join('; ') })}\n`,
+      });
+    }
+
     const result = await xtool.build({
       projectPath: options.projectPath,
       distro: options.distro,
       action: options.action,
       onOutput: (text) => send('xtool:output', { stream: 'build', text }),
     });
+
+    // Иконка: xtool её не умеет, поэтому встраиваем в готовый .ipa сами.
+    if (result.ok && result.ipaPath && options.iconPath) {
+      send('xtool:output', {
+        stream: 'meta',
+        text: `${t('build.iconApplying')}\n`,
+      });
+
+      const applied = await icon.applyToIpa({
+        ipaPath: result.ipaPath,
+        iconPath: options.iconPath,
+        distro: options.distro,
+        onOutput: (text) => send('xtool:output', { stream: 'build', text }),
+      });
+
+      send('xtool:output', {
+        stream: 'meta',
+        text: applied.ok
+          ? `${t('build.iconDone', { count: applied.icons.length })}\n`
+          : `${t('build.iconFailed', { error: applied.error || '' })}\n`,
+      });
+
+      if (applied.ok) {
+        return { ok: result.ok, code: result.code, command: result.command, icon: applied.icons };
+      }
+    }
+
     return { ok: result.ok, code: result.code, command: result.command };
   });
 
@@ -826,6 +905,23 @@ function aboutInfo() {
 
     send('xtool:output', { stream: 'meta', text: `$ ${command}\n` });
     send('xtool:output', { stream: 'meta', text: `${picked.reason}\n` });
+
+    // Перед сборкой через xtool проверяем, что SDK вообще виден компилятору.
+    // На свежей машине бандл называется darwin, но triple цели
+    // arm64-apple-ios в нём нет — и сборка падает с «No Swift SDK found».
+    // Чиним молча: пользователю не должно быть дела до внутренностей бандла.
+    if (picked.tool === 'xtool') {
+      const fixed = await ensureSwiftSdk(options ? options.distro : undefined, (text) =>
+        send('xtool:output', { stream: 'build', text }),
+      );
+      if (fixed && fixed.changed) {
+        send('xtool:output', {
+          stream: 'meta',
+          text: `${t('build.sdkRepaired', { list: fixed.changed.join(', ') })}\n`,
+        });
+      }
+    }
+
     send('xtool:output', { stream: 'build', text: `${t('build.mirroring')}\n` });
 
     const result = await swift.runBuild({
@@ -1029,6 +1125,49 @@ async function resolveArchivePath(chosenPath) {
   if (!archivePath) throw new Error(t('archive.noXcarchiveInZip', { path: resolved }));
 
   return { archivePath, source: 'zip', extracted: true };
+}
+
+/**
+ * Убедиться, что Swift SDK виден компилятору, и починить его при необходимости.
+ *
+ * SwiftPM ищет SDK по двум условиям: triple хоста в info.json и triple цели
+ * arm64-apple-ios в swift-sdk.json. xtool на свежей машине создаёт бандл
+ * «darwin», в котором второго нет — сборка падает с
+ * «No Swift SDK found matching query arm64-apple-ios», хотя `swift sdk list`
+ * показывает darwin и всё выглядит исправным.
+ *
+ * Проверка идемпотентна: если всё на месте, файлы не переписываются.
+ *
+ * @param {string} [distro] дистрибутив WSL
+ * @param {(text: string) => void} [onOutput] куда писать ход проверки
+ * @returns {Promise<{changed: string[], problems: string[]}|null>}
+ */
+async function ensureSwiftSdk(distro, onOutput) {
+  try {
+    const result = await requirements.repairSdkHostTriple({ distro, onOutput });
+
+    // Бандла ещё нет — это нормально, если SDK не установлен: сборка сама
+    // скажет об этом понятным сообщением, вмешиваться не нужно.
+    if (!result.ok) return null;
+
+    const text = result.output || '';
+    if (/SDK_NOT_INSTALLED/.test(text)) return null;
+
+    const changes = /changes=(.+)/.exec(text);
+    const problems = /problems=(.+)/.exec(text);
+
+    const changed = changes && changes[1].trim() !== 'none'
+      ? changes[1].split(',').map((item) => item.trim()).filter(Boolean)
+      : [];
+
+    return {
+      changed,
+      problems: problems ? [problems[1].trim()] : [],
+    };
+  } catch {
+    // Проверка не должна мешать сборке: если не удалось — xtool скажет сам.
+    return null;
+  }
 }
 
 /** Найти .xcarchive внутри распакованного каталога. */

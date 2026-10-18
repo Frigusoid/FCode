@@ -1087,6 +1087,23 @@ async function handleBuildClick() {
 }
 
 /**
+ * Выбрать иконку приложения.
+ *
+ * xtool не компилирует каталоги ресурсов в Assets.car, поэтому иконка не может
+ * попасть в приложение штатным путём. Fcode запоминает картинку и встраивает
+ * её в готовый .ipa сразу после сборки.
+ */
+async function handlePickAppIcon() {
+  const picked = await api.icon.choose();
+  if (!picked) return;
+
+  state.appIcon = picked;
+  log(t('icon.chosen', { path: picked }), 'ok');
+  log(t('icon.hint'), 'dim');
+}
+
+
+/**
  * Конвертировать открытый проект Xcode в SwiftPM-пакет.
  *
  * Результат кладётся в папку рядом с исходной: сам проект не меняется, поэтому
@@ -1577,9 +1594,54 @@ function renderLinuxPanel(env) {
       ${step.command ? `<div class="linux-step-cmd">${esc(step.command)}</div>` : ''}
     `;
 
-    // Шаг с действием открывает окно: интерактивную команду нельзя запускать
-    // вслепую в фоне — ей некому задать вопрос.
-    if (step.action && !step.done) {
+    // Шаг iOS SDK: кнопка починки видна всегда, даже когда SDK «зарегистрирован».
+    // Имя бандла (darwin) ничего не говорит о triple внутри, поэтому проверить
+    // и поправить нужно уметь в любой момент, а не только при красной строке.
+    if (step.id === 'ios-sdk') {
+      const actionRow = document.createElement('div');
+      actionRow.className = 'linux-step-buttons';
+
+      const fix = document.createElement('button');
+      fix.className = 'tb-btn small primary';
+      fix.textContent = t('req.fixSdkHost');
+      fix.onclick = () => handleFixSdkHost();
+      actionRow.appendChild(fix);
+
+      if (!step.done) {
+        const install = document.createElement('button');
+        install.className = 'tb-btn small';
+        install.textContent = t('sdk.title');
+        install.onclick = () => handleSdk();
+        actionRow.appendChild(install);
+      }
+
+      node.appendChild(actionRow);
+    } else if (step.id === 'apple-id') {
+      // Вход только через настоящий терминал: xtool сам спросит пароль и код
+      // двухфакторной проверки. Своё окно этот диалог вело плохо — Apple
+      // отвечала -80045 или вообще не доходило до ввода кода.
+      const actionRow = document.createElement('div');
+      actionRow.className = 'linux-step-buttons';
+
+      const consoleSignIn = document.createElement('button');
+      consoleSignIn.className = 'tb-btn small primary';
+      consoleSignIn.textContent = t('auth.signInConsole');
+      consoleSignIn.onclick = () => {
+        log(t('auth.consoleOpening'), 'dim');
+        openWslTerminal('xtool auth login');
+      };
+      actionRow.appendChild(consoleSignIn);
+
+      const status = document.createElement('button');
+      status.className = 'tb-btn small';
+      status.textContent = t('linux.check');
+      status.onclick = () => refreshLinux();
+      actionRow.appendChild(status);
+
+      node.appendChild(actionRow);
+    } else if (step.action && !step.done) {
+      // Шаг с действием открывает окно: интерактивную команду нельзя запускать
+      // вслепую в фоне — ей некому задать вопрос.
       const actionRow = document.createElement('div');
       actionRow.className = 'linux-step-buttons';
 
@@ -1787,6 +1849,8 @@ async function runXtoolBuild() {
       projectPath: state.workspace.path,
       distro: state.xtoolDistro,
       action: 'dev',
+      // Иконка встраивается после сборки: xtool каталоги ресурсов не компилирует.
+      iconPath: state.appIcon || null,
     });
     if (result.ok) {
       log(t('linux.commandOk'), 'ok');
@@ -3136,7 +3200,12 @@ async function handleRequirements() {
     const commands = runnable.map((row) => `<pre class="cmd">${esc(row.command)}</pre>`).join('');
 
     const buttons = [];
-    if (!result.ready) buttons.push({ label: t('req.installAll'), value: 'run', primary: true });
+    // Строка «SDK для этой системы» умеет чинить себя сама: показываем кнопку,
+    // иначе о проблеме можно узнать, но сделать ничего нельзя.
+    const needsSdkFix = result.missing.some((row) => row.action === 'fix-sdk-host');
+    if (needsSdkFix) buttons.push({ label: t('req.fixSdkHost'), value: 'fix-sdk', primary: true });
+
+    if (!result.ready) buttons.push({ label: t('req.installAll'), value: 'run', primary: !needsSdkFix });
     if (result.missing.some((row) => row.id === 'ios-sdk')) {
       buttons.push({ label: t('sdk.title'), value: 'sdk' });
     }
@@ -3174,6 +3243,10 @@ async function handleRequirements() {
       await navigator.clipboard.writeText(text);
       log(t('req.copied'), 'ok');
       runnable.forEach((row) => log(`  ${row.command}`, 'dim'));
+    } else if (answer === 'fix-sdk') {
+      // Чиним и сразу показываем обновлённую таблицу: иначе непонятно, помогло ли.
+      await handleFixSdkHost();
+      await handleRequirements();
     } else if (answer === 'run') {
       // Если автоматических шагов не осталось, сразу переходим к диалогам.
       if (!runnable.length) await continueSetupInteractively(result);
@@ -3594,6 +3667,7 @@ function wireEvents() {
   $('btn-save-all').onclick = saveAllFiles;
   $('btn-verify').onclick = handleVerify;
   $('btn-convert').onclick = () => withBusy(() => handleConvertProject());
+  $('btn-app-icon').onclick = () => withBusy(() => handlePickAppIcon());
   // Кнопки btn-diag больше нет: состояние инструментов переехало в настройки.
   $('btn-lsp').onclick = restartLanguageServer;
   $('tab-search').onclick = () => showSidebarTab('search');

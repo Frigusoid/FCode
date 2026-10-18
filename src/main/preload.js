@@ -238,6 +238,11 @@ contextBridge.exposeInMainWorld('fcode', {
     isElevated: () => call('xtool:elevated'),
   },
 
+  icon: {
+    choose: () => call('icon:choose'),
+    apply: (options) => call('icon:apply', options),
+  },
+
   shell: {
     reveal: (target) => call('shell:reveal', target),
     open: (target) => call('shell:openPath', target),

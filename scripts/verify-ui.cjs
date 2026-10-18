@@ -1,6 +1,6 @@
 // Проверка интерфейса: вкладка «Requirements», версия 0.0.2, кнопка конвертации.
 const http = require('http');
-const PORT = 9223;
+const PORT = Number(process.argv[2] || 9222);
 
 function getJson(path) {
   return new Promise((resolve, reject) => {

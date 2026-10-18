@@ -52,6 +52,9 @@ export function openSignIn(context) {
     let step = STEPS.credentials;
     let outputBuffer = '';
     let finished = false;
+    /** Текст ошибки от Apple и подсказка, что с ней делать. */
+    let failureReason = '';
+    let failureHint = '';
     /** Ответы для режима API-ключа: xtool спрашивает их по очереди. */
     const pendingKeyAnswers = [];
     const disposers = [];
@@ -130,7 +133,9 @@ export function openSignIn(context) {
           <div class="signin-links">
             <button class="signin-link" id="signin-forgot">${esc(t('auth.forgot'))}</button>
             <button class="signin-link" id="signin-use-key">${esc(t('auth.useKey'))}</button>
+            <button class="signin-link" id="signin-terminal">${esc(t('auth.viaTerminal'))}</button>
           </div>
+          <p class="signin-hint">${esc(t('auth.viaTerminalHint'))}</p>
         `;
         submit.textContent = t('auth.signIn');
 
@@ -141,6 +146,19 @@ export function openSignIn(context) {
         body.querySelector('#signin-forgot').onclick = () => {
           api.shell.open('https://iforgot.apple.com/password/verify/appleid');
         };
+
+        // Запасной путь: вход в настоящем терминале Ubuntu. Там xtool ведёт
+        // диалог сам, включая код двухфакторной проверки — это помогает, когда
+        // ответ Apple не удаётся разобрать своим окном.
+        body.querySelector('#signin-terminal').onclick = async () => {
+          const entered = (body.querySelector('#signin-user').value || '').trim();
+          const command = entered
+            ? `xtool auth login --mode password --username ${JSON.stringify(entered)}`
+            : 'xtool auth login --mode password';
+          await api.xtool.terminal(command, context.distro);
+          appendLog(`${t('auth.viaTerminalOpened')}\n`);
+        };
+
         body.querySelector('#signin-user').focus();
       }
 
@@ -240,14 +258,69 @@ export function openSignIn(context) {
 
       if (step === STEPS.failed) {
         subtitle.textContent = t('auth.failedSubtitle');
-        body.innerHTML = `<div class="signin-result bad">${esc(t('auth.failed'))}</div>`;
+        // Показываем настоящую причину: xtool печатает её в выводе, а общее
+        // «проверьте пароль» вводит в заблуждение, когда дело в блокировке
+        // попыток или в коде двухфакторной проверки.
+        const reason = failureReason || t('auth.failedUnknown');
+        body.innerHTML =
+          `<div class="signin-result bad">${esc(t('auth.failed'))}</div>` +
+          `<p class="signin-hint">${esc(t('auth.failedReason', { reason }))}</p>` +
+          (failureHint ? `<p class="signin-hint">${esc(failureHint)}</p>` : '');
         submit.textContent = t('auth.retry');
         submit.onclick = () => {
+          failureReason = '';
+          failureHint = '';
           step = STEPS.credentials;
           submit.onclick = null;
           render();
         };
       }
+    };
+
+    /**
+     * Достать причину отказа из вывода xtool.
+     *
+     * xtool печатает строку вида «Error: This action cannot be completed at
+     * this time. (-80045)». Раньше интерфейс её выбрасывал и всегда показывал
+     * «проверьте пароль» — даже когда дело было в блокировке попыток или в
+     * двухфакторном коде. Здесь показываем настоящий текст и подсказку для
+     * известных кодов Apple.
+     */
+    const explainFailure = (text) => {
+      const lines = String(text || '')
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+
+      const errorLine = [...lines].reverse().find((line) => /^error[:!]/i.test(line))
+        || [...lines].reverse().find((line) => /error|failed|invalid|incorrect/i.test(line))
+        // Совсем незнакомый текст: лучше показать последнюю строку, чем ничего.
+        || lines[lines.length - 1]
+        || '';
+
+      const reason = errorLine.replace(/^error[:!]\s*/i, '').trim();
+      let hint = '';
+
+      // Порядок важен: проверки на сбой Windows/WSL идут первыми, иначе текст
+      // «недостаточно ресурсов» можно принять за что угодно другое.
+      if (/ERROR_NO_SYSTEM_RESOURCES|CreateInstance|CreateVm|недостаточно системных ресурсов|not enough memory/i.test(reason)) {
+        // Не путать с паролем: Apple тут вообще ни при чём — не запустилась WSL.
+        hint = t('auth.hintNoResources');
+      } else if (/-80045|-20101|too many|cannot be completed/i.test(reason)) {
+        hint = t('auth.hintTooMany');
+      } else if (/incorrect|invalid password|wrong password|-20101/i.test(reason)) {
+        hint = t('auth.hintPassword');
+      } else if (/two-factor|2fa|verification code/i.test(reason)) {
+        hint = t('auth.hintTwoFactor');
+      } else if (/session|expired|token/i.test(reason)) {
+        hint = t('auth.hintSession');
+      } else {
+        // Всё остальное — общая подсказка. Именно этот случай раньше оставлял
+        // человека без объяснений.
+        hint = t('auth.hintUnknown');
+      }
+
+      return { reason, hint };
     };
 
     /** Отправить данные текущего шага. */
@@ -329,9 +402,14 @@ export function openSignIn(context) {
           render();
           log(t('auth.success'), 'ok');
         } else {
+          const explained = explainFailure(outputBuffer);
+          failureReason = explained.reason;
+          failureHint = explained.hint;
           step = STEPS.failed;
           render();
           log(t('auth.failed'), 'error');
+          // Причина в консоль: по ней видно, что именно ответила Apple.
+          if (explained.reason) log(`  ${explained.reason}`, 'dim');
         }
       }),
     );

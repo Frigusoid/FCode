@@ -19,6 +19,7 @@ export const ICONS = {
   build: { fallback: '▶', label: 'Собрать .ipa' },
   verify: { fallback: '✓', label: 'Проверить' },
   convert: { fallback: '⇄', label: 'Конвертировать проект Xcode' },
+  icon: { fallback: '◈', label: 'Иконка приложения' },
   settings: { fallback: '⚙', label: 'Окружение' },
   language: { fallback: '⌥', label: 'Языковой сервер Swift' },
   // Перезапуск сервера: стрелка по кругу.

@@ -196,6 +196,16 @@ function parseSdkTriples(jsonText) {
   }
 }
 
+function parseSdkTargets(jsonText) {
+  if (!jsonText || jsonText === 'нет') return [];
+  try {
+    const parsed = JSON.parse(jsonText);
+    return Object.keys(parsed.targetTriples || {});
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Triple системы из вывода `swift --version`.
  *
@@ -213,20 +223,34 @@ function hostTripleOf(swiftText) {
 /** Проверить наличие инструментов внутри дистрибутива. */
 async function checkInside(distro) {
   // Один вызов вместо пяти: так быстрее и меньше поводов для гонок.
+  //
+  // Скрипт передаётся через base64. Раньше он уходил в wsl.exe аргументом, и
+  // подстановки с кавычками и звёздочкой ломались: `$f` приходил пустым,
+  // `cat` ругался на пустое имя, и разбор triple возвращал пустоту — панель
+  // требований врала, будто SDK не настроен.
   const script = [
-    'echo "###swift"; (swift --version 2>&1 | head -2) || echo "нет"',
-    'echo "###usbmuxd"; (usbmuxd --help 2>&1 | head -1) || echo "нет"',
-    'echo "###xtool"; (xtool --help 2>&1 | head -3) || echo "нет"',
-    'echo "###sdk"; (swift sdk list 2>&1) || echo "нет"',
+    // Маркер печатается через printf с ведущим переводом строки: если вывод
+    // предыдущего раздела не закончился \n (например, файл без перевода строки
+    // в конце), маркер иначе приклеится к последней строке JSON и разбор
+    // потеряет целую секцию.
+    "printf '\\n###swift\\n'; (swift --version 2>&1 | head -2) || echo 'нет'",
+    "printf '\\n###usbmuxd\\n'; (usbmuxd --help 2>&1 | head -1) || echo 'нет'",
+    "printf '\\n###xtool\\n'; (xtool --help 2>&1 | head -3) || echo 'нет'",
+    "printf '\\n###sdk\\n'; (swift sdk list 2>&1) || echo 'нет'",
     // Оглавление бандла: в нём перечислены triple, под которые он годится.
-    // Если host triple системы там нет, компилятор SDK не найдёт, хотя
-    // `swift sdk list` показывает darwin — именно так ломается сборка.
-    'echo "###sdkinfo"; (cat "$HOME/.swiftpm/swift-sdks/darwin.artifactbundle/info.json" 2>/dev/null) || echo "нет"',
-    'echo "###arch"; uname -m',
-    'echo "###home"; echo "$HOME"',
-  ].join('; ');
+    // Имя бандла заранее неизвестно: xtool может назвать его darwin, ios и как
+    // угодно ещё. Берём первый найденный, а не жёсткое darwin.artifactbundle.
+    "printf '\\n###sdkinfo\\n'; (for f in \"$HOME\"/.swiftpm/swift-sdks/*.artifactbundle/info.json; do cat \"$f\"; break; done) 2>/dev/null || echo 'нет'",
+    // Описание самого SDK: здесь перечислены triple ЦЕЛИ, которые он умеет
+    // собирать. Без arm64-apple-ios xtool не найдёт SDK, хотя info.json верен.
+    "printf '\\n###sdktargets\\n'; (for f in \"$HOME\"/.swiftpm/swift-sdks/*.artifactbundle/swift-sdk.json; do cat \"$f\"; break; done) 2>/dev/null || echo 'нет'",
+    "printf '\\n###arch\\n'; uname -m",
+    "printf '\\n###home\\n'; echo \"$HOME\"",
+  ].join('\n');
 
-  const result = await wslStream(script, { distro });
+  // Base64-обёртка: иначе кавычки и звёздочки в подстановках искажаются при
+  // передаче через аргументы wsl.exe, и данные приходят пустыми.
+  const result = await wslStream(wslRunner.encodeScript(script), { distro });
   const sections = {};
   let current = null;
   for (const line of result.output.split(/\r?\n/)) {
@@ -260,11 +284,16 @@ async function checkInside(distro) {
     xtool: { installed: has('xtool'), raw: read('xtool').slice(0, 300) },
     swiftSdk: {
       list: read('sdk').slice(0, 300),
+      // Имя бандла задаёт xtool, и оно не обязано быть darwin. Раньше проверка
+      // искала слово darwin, поэтому на машине с другим именем SDK считался
+      // отсутствующим: строка в Requirements не появлялась, чинить было нечего.
+      installed: has('sdk') && !/no sdk|not found/i.test(read('sdk')),
       hasDarwin: /darwin/i.test(read('sdk')),
       // Triple, под которые объявлен бандл, и triple самой системы. Если второго
       // нет в первом — SDK не подхватится, и это надо чинить, а не пересобирать.
       triples: parseSdkTriples(read('sdkinfo')),
       hostTriple: hostTripleOf(swiftText),
+      targetTriples: parseSdkTargets(read('sdktargets')),
     },
     arch: read('arch') || null,
     home: read('home') || null,
@@ -441,7 +470,8 @@ async function checkEnvironment(preferredDistro) {
   steps.push(
     buildStep({
       id: 'ios-sdk',
-      done: inside.swiftSdk.hasDarwin,
+      // Не привязываемся к имени darwin: бандл может называться иначе.
+      done: Boolean(inside.swiftSdk.installed || inside.swiftSdk.hasDarwin),
       action: 'sdk',
     }),
   );
@@ -796,5 +826,6 @@ module.exports = {
   wslExec,
   decodeWsl,
   parseSdkTriples,
+  parseSdkTargets,
   hostTripleOf,
 };
