@@ -8,6 +8,7 @@
 
 import { createEditor } from './editor.js';
 import { mountIcons, icon } from './icons.js';
+import { parseSwiftUI, renderPreview } from './swiftui-preview.js';
 import { openSignIn } from './signin.js';
 import {
   t,
@@ -386,6 +387,8 @@ function activateTab(path) {
   renderTabs();
   showWelcome(false);
   updatePathBar(tab);
+  // Предпросмотр показывает активный файл, поэтому обновляем при переключении.
+  refreshPreview();
 }
 
 function updatePathBar(tab) {
@@ -828,8 +831,59 @@ async function handleOpenWorkspace() {
       log(t('log.workspacesFound', { list: payload.workspaces.join(', ') }), 'dim');
     }
     payload.suggestions.forEach((s) => log(s.note, s.kind === 'none' ? 'warn' : 'dim'));
+
+    // Проект Xcode сам по себе xtool не соберёт — предлагаем конвертацию сразу
+    // при открытии, а не молча оставляем человека с непонятной ошибкой сборки.
+    await offerXcodeConversion(payload);
   } catch (err) {
     log(t('log.openProjectFailed', { error: err.message }), 'error');
+  }
+}
+
+/**
+ * Предложить конвертацию, если открыт проект Xcode.
+ *
+ * Предупреждаем до работы и перечисляем, что именно произойдёт: исходная папка
+ * остаётся нетронутой, рядом появляется SwiftPM-копия.
+ */
+async function offerXcodeConversion(payload) {
+  if (!payload || !payload.projects || !payload.projects.length) return;
+
+  let probe = null;
+  try {
+    probe = await api.xcode.probe(payload.path);
+  } catch {
+    return;
+  }
+
+  if (!probe || !probe.needsConversion) return;
+
+  const name = String(payload.projects[0]).split(/[\\/]/).pop().replace(/\.xcodeproj$/i, '');
+  const answer = await modal({
+    title: t('convert.xcodeTitle'),
+    body: `
+      <p>${esc(t('convert.xcodeBody', { name }))}</p>
+      <div class="limits-grid">
+        <div class="limit-card yes">
+          <h4>${esc(t('convert.xcodeWillTitle'))}</h4>
+          <p>${esc(t('convert.xcodeWillBody'))}</p>
+        </div>
+        <div class="limit-card">
+          <h4>${esc(t('convert.xcodeKeepTitle'))}</h4>
+          <p>${esc(t('convert.xcodeKeepBody', { path: payload.path }))}</p>
+        </div>
+      </div>`,
+    buttons: [
+      { label: t('convert.xcodeRun'), value: 'convert', primary: true },
+      { label: t('convert.xcodeSkip'), value: 'skip' },
+      { label: t('common.cancel'), value: null },
+    ],
+  });
+
+  if (answer === 'convert') {
+    await handleConvertProject();
+  } else if (answer === 'skip') {
+    log(t('convert.xcodeSkipped'), 'warn');
   }
 }
 
@@ -976,9 +1030,22 @@ async function handleDroppedFiles(paths) {
 }
 
 async function askMode() {
+  const hasIcon = Boolean(state.appIcon);
+
   return modal({
     title: t('mode.title'),
     body: `
+      <div class="build-icon-row">
+        <div class="build-icon-preview" id="build-icon-preview">
+          ${hasIcon ? `<img id="build-icon-image" alt="" src="${esc(toFileUrl(state.appIcon))}">` : '<span>◈</span>'}
+        </div>
+        <div class="build-icon-text">
+          <strong>${esc(t('icon.rowTitle'))}</strong>
+          <span id="build-icon-note">${esc(hasIcon ? t('icon.chosenShort') : t('icon.rowHint'))}</span>
+        </div>
+        <button id="build-icon-import" class="tb-btn small">${esc(t('icon.import'))}</button>
+      </div>
+
       <div class="limits-grid">
         <div class="limit-card yes">
           <h4>${esc(t('mode.devTitle'))}</h4>
@@ -994,7 +1061,31 @@ async function askMode() {
       { label: t('mode.store'), value: 'appstore' },
       { label: t('modal.cancel'), value: null },
     ],
+    // Иконку выбираем прямо здесь: отдельная кнопка на панели только мешала.
+    onRender: ({ root }) => {
+      const button = root.querySelector('#build-icon-import');
+      if (!button) return;
+
+      button.onclick = async () => {
+        const picked = await api.icon.choose();
+        if (!picked) return;
+
+        state.appIcon = picked;
+
+        const preview = root.querySelector('#build-icon-preview');
+        if (preview) preview.innerHTML = `<img alt="" src="${esc(toFileUrl(picked))}">`;
+
+        const note = root.querySelector('#build-icon-note');
+        if (note) note.textContent = t('icon.chosenShort');
+      };
+    },
   });
+}
+
+/** Путь Windows → URL для <img>. */
+function toFileUrl(filePath) {
+  const normalized = String(filePath || '').replace(/\\/g, '/');
+  return `file:///${normalized.replace(/^\//, '')}`;
 }
 
 /**
@@ -1023,6 +1114,8 @@ async function handleBuildFromSource() {
       distro: state.xtoolDistro,
       mode,
       configuration: state.configuration || 'debug',
+      // Иконку выбрали в окне сборки — она встроится в готовый .ipa.
+      iconPath: state.appIcon || null,
     });
 
     if (!result.ok) {
@@ -1087,6 +1180,83 @@ async function handleBuildClick() {
 }
 
 /**
+ * Создать .xcodeproj для текущего проекта.
+ *
+ * Обратная совместимость: xtool собирает SwiftPM и на Linux не умеет делать
+ * .xcodeproj, поэтому проект иначе не открыть в Xcode на Mac. Сборка остаётся
+ * прежней — через xtool.
+ */
+async function handleMakeXcodeProject() {
+  if (!state.workspace) {
+    log(t('xcode.needProject'), 'warn');
+    return;
+  }
+
+  logHead(t('xcode.making'));
+
+  try {
+    const result = await api.xcode.makeProject({
+      projectPath: state.workspace.path,
+      overwrite: true,
+    });
+
+    log(t('xcode.made', { path: result.path }), 'ok');
+    log(t('xcode.madeHint'), 'dim');
+  } catch (error) {
+    log(t('xcode.makeFailed', { error: error.message || String(error) }), 'error');
+  }
+}
+
+/**
+ * Панель приблизительного предпросмотра.
+ *
+ * Показывает эскиз вёрстки текущего файла: контейнеры, тексты, кнопки, отступы.
+ * Это не симулятор — код не исполняется, состояние не учитывается. Подпись
+ * в панели говорит об этом прямо, чтобы не было ложных ожиданий.
+ */
+function togglePreview(force) {
+  const panel = $('preview-panel');
+  if (!panel) return;
+
+  const show = force === undefined ? panel.classList.contains('hidden') : Boolean(force);
+  panel.classList.toggle('hidden', !show);
+
+  if (show) {
+    refreshPreview();
+  }
+}
+
+/** Перерисовать предпросмотр по активному файлу. */
+function refreshPreview() {
+  const panel = $('preview-panel');
+  if (!panel || panel.classList.contains('hidden')) return;
+
+  const body = $('preview-body');
+  const notes = $('preview-notes');
+  if (!body) return;
+
+  const tab = state.tabs.find((item) => item.path === state.activeTabPath);
+  if (!tab) {
+    body.innerHTML = `<div class="pv-empty">${esc(t('preview.noFile'))}</div>`;
+    if (notes) notes.textContent = '';
+    return;
+  }
+
+  try {
+    const parsed = parseSwiftUI(tab.text || '');
+    body.innerHTML = renderPreview(parsed.nodes);
+
+    const messages = [];
+    if (!parsed.found) messages.push(t('preview.noBody'));
+    if (parsed.warnings.length) messages.push(parsed.warnings[0]);
+    if (notes) notes.textContent = messages.join(' · ');
+  } catch (error) {
+    body.innerHTML = `<div class="pv-empty">${esc(t('preview.failed'))}</div>`;
+    if (notes) notes.textContent = String(error.message || error);
+  }
+}
+
+/**
  * Выбрать иконку приложения.
  *
  * xtool не компилирует каталоги ресурсов в Assets.car, поэтому иконка не может
@@ -1128,7 +1298,7 @@ async function handleConvertProject() {
     // Сразу открываем результат: собирать дальше нужно именно его.
     const open = await askConfirm(
       t('convert.title'),
-      t('convert.openBody', { path: result.outputDir }),
+      t('convert.convertedTo', { path: result.outputDir }),
       'convert.open',
     );
     if (open) {
@@ -3088,6 +3258,7 @@ async function saveActiveFile() {
   try {
     await saveActive();
     log(t('file.saved', { name: tab.name }), 'ok');
+    refreshPreview();
     return true;
   } catch (error) {
     log(t('save.failed', { error: error.message }), 'error');
@@ -3667,7 +3838,6 @@ function wireEvents() {
   $('btn-save-all').onclick = saveAllFiles;
   $('btn-verify').onclick = handleVerify;
   $('btn-convert').onclick = () => withBusy(() => handleConvertProject());
-  $('btn-app-icon').onclick = () => withBusy(() => handlePickAppIcon());
   // Кнопки btn-diag больше нет: состояние инструментов переехало в настройки.
   $('btn-lsp').onclick = restartLanguageServer;
   $('tab-search').onclick = () => showSidebarTab('search');
@@ -3694,6 +3864,18 @@ function wireEvents() {
   $('btn-xtool').onclick = () => openLinuxPanel();
 
   $('btn-linux-close').onclick = () => linuxPanel().classList.add('hidden');
+
+  // Ссылки в шапке раскрывают разделы: панель не должна быть свалкой кнопок.
+  document.querySelectorAll('.linux-links .link-btn[data-section]').forEach((link) => {
+    link.onclick = () => {
+      const section = document.getElementById(`linux-${link.dataset.section}`);
+      if (!section) return;
+      const willOpen = section.classList.contains('hidden');
+      section.classList.toggle('hidden', !willOpen);
+      link.classList.toggle('active', willOpen);
+    };
+  });
+
   $('btn-linux-run').onclick = () => runAutoSetup();
   $('btn-linux-refresh').onclick = () => withBusy(() => refreshLinux());
   $('btn-linux-help').onclick = showXtoolInfo;
@@ -3779,6 +3961,8 @@ function wireEvents() {
   api.on('menu:save', saveActive);
   api.on('menu:find', () => editor && editor.openFind());
   api.on('menu:buildIpa', handleBuildClick);
+  api.on('menu:previewLayout', () => togglePreview());
+  api.on('menu:makeXcodeProject', () => withBusy(() => handleMakeXcodeProject()));
   api.on('menu:verifyIpa', handleVerify);
   api.on('menu:limitations', showLimitations);
 
@@ -3929,6 +4113,9 @@ async function boot() {
     renderProjects,
     switchProject,
     openProjectTab,
+    // Вынесено для проверки из инструментов разработчика: предупреждение о
+    // конвертации принадлежит тому же окну, что и открытие проекта.
+    offerXcodeConversion,
   };
 
   wireEvents();

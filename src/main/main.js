@@ -25,8 +25,10 @@ const search = require('./modules/search');
 const swift = require('./modules/swift');
 const requirements = require('./modules/requirements');
 const xcode = require('./modules/xcode');
+const xcodeproj = require('./modules/xcodeproj');
 const converter = require('./modules/converter');
 const icon = require('./modules/icon');
+const wslTerminal = require('./modules/wsl-terminal');
 const zsign = require('./modules/zsign');
 const setup = require('./modules/setup');
 const i18n = require('../shared/i18n');
@@ -128,7 +130,9 @@ function registerHandlers() {
   // --- рабочее пространство ---
   handle('workspace:choose', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: t('menu.openFolder'),
+      // Подсказка в заголовке: открывать нужно папку, в которой лежит
+      // .xcodeproj, а не сам бандл проекта.
+      title: t('workspace.whichFolder'),
       properties: ['openDirectory'],
       buttonLabel: t('dialog.openFolderButton'),
     });
@@ -319,12 +323,34 @@ function registerHandlers() {
 
     send('ipa:progress', { phase: 'done', outputPath: ipaPath });
 
+    // --- шаг 5: иконка приложения ---
+    // xtool не компилирует каталоги ресурсов, поэтому иконку встраиваем в
+    // готовый .ipa. Выбирается она в окне сборки, рядом с «для устройства».
+    const finalIpa = ipa.outputPath || ipaPath;
+    let iconResult = null;
+    if (settings.iconPath) {
+      send('xtool:output', { stream: 'meta', text: `${t('build.iconApplying')}\n` });
+      iconResult = await icon.applyToIpa({
+        ipaPath: finalIpa,
+        iconPath: settings.iconPath,
+        distro: settings.distro,
+        onOutput: (text) => send('xtool:output', { stream: 'build', text }),
+      });
+      send('xtool:output', {
+        stream: 'meta',
+        text: iconResult.ok
+          ? `${t('build.iconDone', { count: iconResult.icons.length })}\n`
+          : `${t('build.iconFailed', { error: iconResult.error || '' })}\n`,
+      });
+    }
+
     return {
       ok: true,
       stage: 'done',
       archivePath: archive.archivePath,
-      ipaPath: ipa.outputPath || ipaPath,
+      ipaPath: finalIpa,
       appPath: localApp,
+      icons: iconResult && iconResult.ok ? iconResult.icons : null,
       bundle: archive.bundle || null,
     };
   });
@@ -682,6 +708,20 @@ function aboutInfo() {
     }
 
     return { ok: result.ok, code: result.code };
+  });
+
+  // Создать .xcodeproj рядом с SwiftPM-проектом: так проект остаётся
+  // открываемым в Xcode на Mac. xtool на Linux этого не умеет.
+  handle('xcode:makeProject', (_event, options) => {
+    const settings = options || {};
+    const target = settings.projectPath || currentWorkspacePath;
+    if (!target) throw new Error(t('main.noWorkspace'));
+    return xcodeproj.generate(target, {
+      overwrite: settings.overwrite !== false,
+      iosVersion: settings.iosVersion,
+      name: settings.name,
+      bundleId: settings.bundleId,
+    });
   });
 
   // --- сборка без Xcode: xtool в подсистеме Linux ---
@@ -1042,11 +1082,10 @@ function aboutInfo() {
   // Поэтому открываем настоящее окно консоли WSL.
   handle('xtool:terminal', async (_event, command, distro) => {
     const target = distro || xtool.DEFAULT_DISTRO;
-    const args = ['-d', target];
-    if (command) {
-      args.push('--', 'bash', '-lc', `${command}; echo; echo "--- готово, нажмите Enter ---"; read _`);
-    }
-    const child = spawn('cmd.exe', ['/c', 'start', '', 'wsl.exe', ...args], {
+
+    // wsl.exe из Program Files и --cd ~: консоль открывается в домашней папке
+    // Linux. Сборка аргументов вынесена в wsl-terminal, её проверяют тесты.
+    const child = spawn('cmd.exe', ['/c', 'start', '', wslTerminal.executable(), ...wslTerminal.args(command, target)], {
       detached: true,
       stdio: 'ignore',
       windowsHide: false,
@@ -1295,6 +1334,18 @@ function buildMenu() {
           label: t('menu.verifyIpa'),
           accelerator: 'CmdOrCtrl+Shift+V',
           click: () => send('menu:verifyIpa'),
+        },
+        { type: 'separator' },
+        // Эти две вещи убраны с панели, чтобы не плодить кнопки, но остаются
+        // доступными из меню.
+        {
+          label: t('menu.previewLayout'),
+          accelerator: 'CmdOrCtrl+Shift+P',
+          click: () => send('menu:previewLayout'),
+        },
+        {
+          label: t('menu.makeXcodeProject'),
+          click: () => send('menu:makeXcodeProject'),
         },
       ],
     },

@@ -35,44 +35,74 @@ const SIZES = [
 const ICON_NAMES = ['AppIcon60x60', 'AppIcon76x76', 'AppIcon83.5x83.5', 'AppIcon1024'];
 
 /**
- * Скрипт PowerShell: уменьшить картинку до нужных размеров.
+ * Скрипт PowerShell: обрезать картинку до квадрата и сделать нужные размеры.
  *
- * Параметры передаём позиционно, сам текст — только ASCII, иначе Windows
- * PowerShell читает файл в системной кодировке и ломает кириллицу.
+ * Про имена: параметр нельзя называть `$Source`, если внутри есть переменная
+ * `$source` — PowerShell не различает регистр букв, и в DrawImage уходила
+ * строка с путём вместо картинки. Именно поэтому иконки получались пустыми.
+ *
+ * Обрезка: берём квадрат по центру — как object-fit: cover в предпросмотре.
+ * Прозрачные места заливаем белым: iOS не любит иконки с альфа-каналом.
  */
 const RESIZE_SCRIPT = `param(
-  [string]$Source,
+  [string]$ImagePath,
   [string]$OutDir
 )
 
 Add-Type -AssemblyName System.Drawing
 
-$sizes = @{
-  'AppIcon60x60@2x.png'      = 120
-  'AppIcon60x60@3x.png'      = 180
-  'AppIcon76x76@2x~ipad.png' = 152
+$sizes = [ordered]@{
+  'AppIcon60x60@2x.png'          = 120
+  'AppIcon60x60@3x.png'          = 180
+  'AppIcon76x76@2x~ipad.png'     = 152
   'AppIcon83.5x83.5@2x~ipad.png' = 167
-  'AppIcon1024.png'          = 1024
+  'AppIcon1024.png'              = 1024
 }
 
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null }
 
-$source = [System.Drawing.Image]::FromFile($Source)
+$picture = [System.Drawing.Image]::FromFile($ImagePath)
+
+# Квадрат по центру: лишнее по длинной стороне отрезается.
+$cropSide = [Math]::Min($picture.Width, $picture.Height)
+$cropX = [int](($picture.Width - $cropSide) / 2)
+$cropY = [int](($picture.Height - $cropSide) / 2)
+$cropRect = New-Object System.Drawing.Rectangle($cropX, $cropY, $cropSide, $cropSide)
+
+Write-Output ("источник " + $picture.Width + "x" + $picture.Height + " -> квадрат " + $cropSide + "x" + $cropSide)
 
 foreach ($name in $sizes.Keys) {
-  $side = $sizes[$name]
-  $bitmap = New-Object System.Drawing.Bitmap($side, $side)
-  $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-  $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-  $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-  $graphics.DrawImage($source, 0, 0, $side, $side)
-  $graphics.Dispose()
-  $bitmap.Save((Join-Path $OutDir $name), [System.Drawing.Imaging.ImageFormat]::Png)
-  $bitmap.Dispose()
+  $target = $sizes[$name]
+
+  $canvas = New-Object System.Drawing.Bitmap($target, $target)
+  $paint = [System.Drawing.Graphics]::FromImage($canvas)
+  $paint.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+  $paint.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+  $paint.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+  $paint.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
+
+  # Белая подложка вместо прозрачности.
+  $paint.Clear([System.Drawing.Color]::White)
+  $destRect = New-Object System.Drawing.Rectangle(0, 0, $target, $target)
+  $paint.DrawImage($picture, $destRect, $cropRect, [System.Drawing.GraphicsUnit]::Pixel)
+  $paint.Dispose()
+
+  $canvas.Save((Join-Path $OutDir $name), [System.Drawing.Imaging.ImageFormat]::Png)
+
+  # Одноцветный квадрат бесполезен — сообщаем, чтобы не встраивать пустоту.
+  $colors = @{}
+  $step = [Math]::Max(1, [int]($target / 16))
+  for ($x = 0; $x -lt $target; $x += $step) {
+    for ($y = 0; $y -lt $target; $y += $step) {
+      $colors[$canvas.GetPixel($x, $y).ToArgb()] = 1
+    }
+  }
+  Write-Output ("размер " + $target + ": цветов " + $colors.Count)
+
+  $canvas.Dispose()
 }
 
-$source.Dispose()
-Write-Output ("made " + $sizes.Count)
+$picture.Dispose()
 `;
 
 /**
@@ -129,11 +159,15 @@ new_info_path = os.path.join(work, 'Info.plist')
 with open(new_info_path, 'wb') as handle:
     plistlib.dump(info, handle, fmt=plistlib.FMT_BINARY)
 
-# Пересобираем архив: все старые записи + иконки + новый Info.plist.
+# Пересобираем архив: старые записи + иконки + новый Info.plist.
+# Записи, которые заменяем, выбрасываем: иначе в архиве окажутся две копии
+# с одним именем, и какая из них попадёт в приложение — неизвестно.
+replaced = {info_name} | {payload + name for name in icon_files}
+
 tmp_ipa = os.path.join(work, 'patched.ipa')
 with zipfile.ZipFile(ipa_path) as source, zipfile.ZipFile(tmp_ipa, 'w', zipfile.ZIP_DEFLATED) as target:
     for item in source.infolist():
-        if item.filename == info_name:
+        if item.filename in replaced:
             continue
         target.writestr(item, source.read(item.filename))
 
@@ -153,15 +187,28 @@ function makeIcons(sourcePath, outDir) {
   fs.mkdirSync(outDir, { recursive: true });
 
   const scriptPath = path.join(outDir, '..', 'resize-icons.ps1');
-  fs.writeFileSync(scriptPath, RESIZE_SCRIPT, 'ascii');
+  // Windows PowerShell 5.1 читает .ps1 без BOM как ANSI и ломает кириллицу,
+  // поэтому ставим BOM и пишем в UTF-8.
+  fs.writeFileSync(scriptPath, `\uFEFF${RESIZE_SCRIPT}`, 'utf8');
 
-  execFileSync(
+  const output = execFileSync(
     'powershell.exe',
     ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, sourcePath, outDir],
     { stdio: 'pipe', timeout: 60000, windowsHide: true },
-  );
+  ).toString();
 
   const made = SIZES.filter((item) => fs.existsSync(path.join(outDir, item.file)));
+  if (!made.length) {
+    throw new Error('картинка не обработалась: файлы иконок не создались');
+  }
+
+  // Скрипт печатает число цветов в каждом размере. Если везде один цвет,
+  // значит нарисовалось пустое поле — такую иконку встраивать нельзя.
+  const counts = [...output.matchAll(/цветов\s+(\d+)/g)].map((match) => Number(match[1]));
+  if (counts.length && counts.every((count) => count <= 1)) {
+    throw new Error('картинка однотонная: получится пустая иконка');
+  }
+
   return made.map((item) => item.file);
 }
 

@@ -29,6 +29,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const xcode = require('./xcode');
+const xcodeproj = require('./xcodeproj');
 
 /** Пакеты, которые тянут библиотеки хоста и ломают линковку под iOS. */
 const HOST_LINKED_PACKAGES = ['ZIPFoundation'];
@@ -470,6 +471,46 @@ function convert(rootPath, options = {}) {
   const bundleId = options.bundleId || analysis.build?.bundleId || `com.example.${moduleName.toLowerCase()}`;
   fs.writeFileSync(path.join(outputDir, 'xtool.yml'), `version: 1\nbundleID: ${bundleId}\n`, 'utf8');
 
+  // 7. Обратная совместимость с Xcode: рядом с Package.swift кладём настоящий
+  // .xcodeproj. xtool на Linux генерировать его не умеет, а без него проект
+  // не открыть в Xcode на Mac. Основной сборкой остаётся SwiftPM — .xcodeproj
+  // лишь делает проект переносимым.
+  //
+  // Info.plist переносим отдельно: в нём бывают URL-схемы, типы файлов и
+  // доступ к документам, которых нет ни в SwiftPM, ни в синтезированном Xcode
+  // plist. Без этого приложение после переноса теряет часть поведения.
+  const infoPlistSource = findInfoPlist(analysis);
+  let infoPlistName = null;
+  if (infoPlistSource) {
+    try {
+      fs.copyFileSync(infoPlistSource, path.join(outputDir, 'Info.plist'));
+      infoPlistName = 'Info.plist';
+      notes.push(`перенесён ${path.basename(infoPlistSource)} — сохранены URL-схемы и типы файлов`);
+    } catch (error) {
+      notes.push(`Info.plist не перенесён: ${error.message}`);
+    }
+  }
+
+  let xcodeProject = null;
+  if (options.xcodeproj !== false) {
+    try {
+      xcodeProject = xcodeproj.generate(outputDir, {
+        name: moduleName,
+        sourceDir: `Sources/${moduleName}`,
+        bundleId,
+        iosVersion: options.iosVersion || analysis.build?.iosVersion || 17,
+        version: options.version || '1.0',
+        infoPlist: infoPlistName,
+        packages: xcodeRemotePackages(analysis, vendored),
+        extraGroups: vendored.map((name) => ({ name, path: `Vendor/${name}` })),
+        overwrite: true,
+      });
+      notes.push(`создан ${xcodeProject.name}.xcodeproj — проект открывается в Xcode на Mac`);
+    } catch (error) {
+      notes.push(`.xcodeproj не создан: ${error.message}`);
+    }
+  }
+
   return {
     ok: true,
     outputDir,
@@ -479,7 +520,75 @@ function convert(rootPath, options = {}) {
     nestedPackages: nestedPackages.map((p) => p.name),
     notes,
     manifest,
+    xcodeProject,
+    infoPlist: infoPlistName,
   };
+}
+
+/**
+ * Удалённые зависимости для генерируемого .xcodeproj.
+ *
+ * Пусть Xcode разрешает их сам: так проект остаётся обычным, без копий в
+ * Vendor. Скачанные пакеты сюда не попадают — их исходники подключены
+ * отдельными группами, иначе модуль объявился бы дважды.
+ *
+ * @param {object} analysis разбор оригинального проекта
+ * @param {string[]} vendored имена пакетов, лежащих в Vendor
+ */
+function xcodeRemotePackages(analysis, vendored) {
+  const result = [];
+
+  for (const pkg of analysis.packages || []) {
+    const product = pkg.product || pkg.name;
+    if (!product || !pkg.url) continue;
+    if (vendored.includes(product)) continue;
+
+    result.push({
+      kind: 'remote',
+      url: pkg.url,
+      version: pkg.version || '1.0.0',
+      product,
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Найти Info.plist приложения в исходном проекте.
+ *
+ * Xcode обычно держит его рядом с .xcodeproj, с именем вида
+ * «Приложение-Info.plist»; встречается и внутри папки исходников.
+ */
+function findInfoPlist(analysis) {
+  const candidates = [
+    path.join(analysis.root, `${analysis.displayName}-Info.plist`),
+    // Xcode часто заменяет пробелы дефисами: «Pocket Poster» → «Pocket-Poster-Info.plist».
+    path.join(analysis.root, `${String(analysis.displayName || '').replace(/\s+/g, '-')}-Info.plist`),
+    path.join(analysis.root, `${analysis.target?.name || ''}-Info.plist`),
+    path.join(analysis.root, 'Info.plist'),
+  ];
+
+  if (analysis.sourceDir) {
+    candidates.push(path.join(analysis.root, analysis.sourceDir, 'Info.plist'));
+  }
+
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+  }
+
+  // Последняя попытка: любой *-Info.plist в корне проекта.
+  try {
+    const found = fs
+      .readdirSync(analysis.root, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && /-Info\.plist$/i.test(entry.name))
+      .map((entry) => path.join(analysis.root, entry.name));
+    if (found.length) return found[0];
+  } catch {
+    /* корень уже проверен выше */
+  }
+
+  return null;
 }
 
 /**

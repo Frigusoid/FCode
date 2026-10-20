@@ -380,7 +380,7 @@ button, select, input { font-family: inherit; font-size: inherit; color: inherit
 
 .welcome-inner { max-width: 560px; padding: 28px; text-align: center; }
 
-.welcome-logo { font-size: 40px; font-weight: 700; letter-spacing: -0.02em; background: linear-gradient(135deg, #a855f7, #6366f1) text; color: transparent; }
+.welcome-logo { font-size: 42px; font-weight: 300; letter-spacing: 0.01em; background: linear-gradient(135deg, #a855f7, #6366f1) text; color: transparent; }
 
 .welcome-sub { color: var(--text-dim); margin: 6px 0px 26px; }
 
@@ -1602,4 +1602,259 @@ button, select, input { font-family: inherit; font-size: inherit; color: inherit
 .busy-inline .busy-image {
   width: 56px;
   height: 56px;
+}
+
+/* ---------------------------------------- предпросмотр вёрстки (эскиз) */
+
+/*
+ * Панель показывает приблизительный вид SwiftUI-разметки. Это не симулятор:
+ * элементы рисуются по тексту кода, поэтому размеры и шрифты условные.
+ */
+.preview-panel {
+  width: 380px;
+  min-width: 380px;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel, #14101c);
+  border-left: 1px solid var(--border, #2a2436);
+}
+
+.preview-panel.hidden { display: none; }
+
+.preview-hint {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--text-dim, #8d86a0);
+  border-bottom: 1px solid var(--border, #2a2436);
+}
+
+.preview-stage {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 16px 12px;
+}
+
+.preview-phone {
+  width: 320px;
+  min-height: 620px;
+  background: #000;
+  border: 8px solid #2b2b2e;
+  border-radius: 38px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.preview-notch {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 120px;
+  height: 22px;
+  background: #000;
+  border-bottom-left-radius: 12px;
+  border-bottom-right-radius: 12px;
+  z-index: 2;
+}
+
+.preview-status {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 18px 4px;
+  font-size: 11px;
+  color: #fff;
+  background: #000;
+}
+
+.preview-body {
+  flex: 1;
+  background: #0d0d10;
+  color: #f2f2f7;
+  font-family: -apple-system, "Segoe UI", sans-serif;
+  padding: 4px 0 12px;
+  overflow: auto;
+}
+
+.preview-notes {
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--text-dim, #8d86a0);
+  border-top: 1px solid var(--border, #2a2436);
+  max-height: 90px;
+  overflow: auto;
+}
+
+/* --- элементы эскиза --- */
+
+.pv-root { display: flex; flex-direction: column; }
+
+.pv-col { display: flex; flex-direction: column; }
+.pv-row { display: flex; flex-direction: row; align-items: center; }
+.pv-stack { display: flex; flex-direction: column; gap: 6px; }
+
+.pv-scrollview, .pv-list, .pv-form { display: flex; flex-direction: column; gap: 8px; }
+
+.pv-list { padding: 8px 12px; }
+.pv-section { display: flex; flex-direction: column; gap: 6px; }
+.pv-navigationstack, .pv-navigationview, .pv-tabview, .pv-group { display: flex; flex-direction: column; }
+
+.pv-spacer { flex: 1 1 auto; min-height: 8px; min-width: 8px; }
+.pv-divider { height: 1px; background: #2c2c2e; margin: 6px 0; }
+
+.pv-text { font-size: 17px; line-height: 1.35; }
+.pv-label { font-size: 17px; color: #f2f2f7; }
+.pv-image {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  border-radius: 6px;
+  background: rgba(142, 142, 147, 0.22);
+  color: #b9b9c0;
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+.pv-image-glyph { line-height: 1; }
+
+.pv-button {
+  background: #0a84ff;
+  color: #fff;
+  font-size: 17px;
+  font-weight: 600;
+  text-align: center;
+  padding: 12px 16px;
+  border-radius: 10px;
+  margin: 4px 12px;
+}
+
+.pv-link { color: #0a84ff; font-size: 17px; }
+.pv-field { border: 1px solid #3a3a3c; border-radius: 8px; padding: 10px 12px; font-size: 15px; color: #8e8e93; margin: 4px 12px; }
+.pv-toggle { font-size: 15px; color: #c7c7cc; padding: 6px 12px; }
+.pv-progress { font-size: 13px; color: #8e8e93; padding: 8px 12px; }
+.pv-shape { background: #3a3a3c; min-height: 60px; border-radius: 8px; margin: 4px 12px; }
+
+.pv-cond { border-left: 2px dashed #6b5fa8; margin: 4px 8px; padding-left: 8px; display: flex; flex-direction: column; }
+.pv-cond-label { font-size: 10px; color: #b39ddb; text-transform: uppercase; letter-spacing: 0.04em; }
+.pv-cond-body { display: flex; flex-direction: column; }
+
+.pv-unknown {
+  border: 1px dashed #6b5fa8;
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 4px 12px;
+  font-size: 13px;
+  color: #b39ddb;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.pv-unknown-hint { font-size: 10px; color: #7f759c; }
+
+.pv-empty { padding: 24px 16px; text-align: center; font-size: 13px; color: #8e8e93; }
+
+/* ------------------------------- выбор иконки в окне сборки */
+
+.build-icon-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border, #2a2436);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.build-icon-preview {
+  width: 52px;
+  height: 52px;
+  min-width: 52px;
+  border-radius: 12px;
+  background: rgba(142, 142, 147, 0.18);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  color: #8d86a0;
+  overflow: hidden;
+}
+
+.build-icon-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.build-icon-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.build-icon-text strong { font-size: 13px; }
+.build-icon-text span { font-size: 12px; color: var(--text-dim, #8d86a0); }
+
+/* ------------------------------------------- панель требований: структура */
+
+/*
+ * Панель показывает состояние и один главный шаг. Всё остальное спрятано
+ * в раскрывающиеся разделы, чтобы не превращаться в стену кнопок.
+ */
+.linux-primary {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px 6px;
+}
+
+.linux-primary .tb-btn { flex: 1; }
+
+.linux-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding: 0 12px 8px;
+  border-bottom: 1px solid var(--border, #2a2436);
+}
+
+.linux-links .link-btn {
+  border: none;
+  background: none;
+  padding: 2px 0;
+  font-size: 12px;
+  color: var(--text-dim, #8d86a0);
+  cursor: pointer;
+}
+
+.linux-links .link-btn:hover { color: var(--text, #e7e2f3); }
+.linux-links .link-btn.active { color: var(--accent, #a98bff); }
+
+.linux-section {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border, #2a2436);
+}
+
+.linux-section.hidden { display: none; }
+
+.linux-section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim, #8d86a0);
+  margin-bottom: 8px;
+}
+
+.linux-section-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }

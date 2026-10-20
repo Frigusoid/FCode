@@ -62,9 +62,6 @@
           <button id="btn-xtool" class="tb-btn" data-i18n-title="toolbar.linuxTitle">
             <span data-i18n="toolbar.linux">Requirements</span>
           </button>
-          <button id="btn-app-icon" class="tb-btn" data-i18n-title="icon.buttonTitle">
-            <span class="ico" data-icon="icon" data-fallback="◈"></span> <span data-i18n="icon.button">App icon</span>
-          </button>
           <button id="btn-build" class="tb-btn primary" data-i18n-title="toolbar.buildTitle">
             <span class="ico" data-icon="build" data-fallback="▶"></span> <span data-i18n="toolbar.build">Build .ipa</span>
           </button>
@@ -168,6 +165,30 @@
           <div id="inspector-body" class="inspector-body"></div>
         </aside>
 
+        <!-- Approximate layout preview: not a simulator, just a sketch -->
+        <aside id="preview-panel" class="preview-panel hidden">
+          <div class="inspector-head">
+            <span data-i18n="preview.title">Preview</span>
+            <span>
+              <button id="btn-preview-refresh" class="icon-btn" data-i18n-title="preview.refresh">
+                <span class="ico" data-icon="reload" data-fallback="↻"></span>
+              </button>
+              <button id="btn-preview-close" class="icon-btn" data-i18n-title="modal.close">
+                <span class="ico" data-icon="close" data-fallback="✕"></span>
+              </button>
+            </span>
+          </div>
+          <div class="preview-hint" data-i18n="preview.hint">Approximate layout, not a simulator</div>
+          <div class="preview-stage">
+            <div class="preview-phone">
+              <div class="preview-notch"></div>
+              <div class="preview-status"><span>9:41</span><span>Wi-Fi · 100%</span></div>
+              <div id="preview-body" class="preview-body"></div>
+            </div>
+          </div>
+          <div id="preview-notes" class="preview-notes"></div>
+        </aside>
+
         <!-- Build without Xcode: xtool inside the Linux subsystem -->
         <aside id="linux-panel" class="linux-panel hidden">
           <div class="inspector-head">
@@ -178,26 +199,40 @@
             </span>
           </div>
 
-          <div class="linux-actions">
-            <button id="btn-linux-run" class="tb-btn small run" data-i18n-title="linux.runAllTitle" data-i18n="linux.runAll">Run</button>
-            <button id="btn-setup-guide" class="tb-btn small primary" data-i18n="guide.more">How to install</button>
-            <button id="btn-about" class="tb-btn small" data-i18n="about.menu">About</button>
-            <button id="btn-linux-requirements" class="tb-btn small" data-i18n="req.button">Requirements</button>
+          <div class="linux-primary">
+            <button id="btn-linux-run" class="tb-btn small primary" data-i18n-title="linux.runAllTitle" data-i18n="req.fixAll">Fix everything</button>
             <button id="btn-linux-refresh" class="tb-btn small" data-i18n="linux.check">Check</button>
-            <button id="btn-linux-new" class="tb-btn small" data-i18n="linux.newProject">New project</button>
-            <button id="btn-linux-build" class="tb-btn small primary" data-i18n="linux.build">Build</button>
-            <button id="btn-linux-install" class="tb-btn small" data-i18n="linux.install">Install .ipa</button>
-            <button id="btn-linux-devices" class="tb-btn small" data-i18n="linux.devices">Devices</button>
           </div>
 
-          <div class="linux-actions linux-actions-account">
-            <button id="btn-account" class="tb-btn small" data-i18n="account.title">Apple account</button>
-            <button id="btn-ds-certificates" class="tb-btn small" data-i18n="account.certificates">Certificates</button>
-            <button id="btn-ds-profiles" class="tb-btn small" data-i18n="account.profiles">Profiles</button>
-            <button id="btn-ds-devices" class="tb-btn small" data-i18n="account.devices">Devices</button>
-            <button id="btn-ios-sdk" class="tb-btn small" data-i18n="sdk.title">iOS SDK</button>
-            <button id="btn-sideloadly" class="tb-btn small" data-i18n="sideloadly.install">Sideloadly</button>
-            <button id="btn-zsign" class="tb-btn small" data-i18n="zsign.title">Sign .ipa</button>
+          <div class="linux-links">
+            <button class="link-btn" data-section="tools" data-i18n="linux.section.tools">Tools</button>
+            <button class="link-btn" data-section="account" data-i18n="linux.link.account">Account</button>
+            <button id="btn-setup-guide" class="link-btn" data-i18n="guide.more">How to install</button>
+            <button id="btn-about" class="link-btn" data-i18n="about.menu">About</button>
+          </div>
+
+          <div id="linux-tools" class="linux-section hidden">
+            <div class="linux-section-title" data-i18n="linux.section.tools">Tools</div>
+            <div class="linux-section-row">
+              <button id="btn-linux-requirements" class="tb-btn small" data-i18n="req.button">Requirements</button>
+              <button id="btn-linux-new" class="tb-btn small" data-i18n="linux.newProject">New project</button>
+              <button id="btn-linux-build" class="tb-btn small" data-i18n="linux.build">Build</button>
+              <button id="btn-linux-install" class="tb-btn small" data-i18n="linux.install">Install .ipa</button>
+              <button id="btn-linux-devices" class="tb-btn small" data-i18n="linux.devices">Devices</button>
+            </div>
+          </div>
+
+          <div id="linux-account" class="linux-section hidden">
+            <div class="linux-section-title" data-i18n="linux.section.account">Account and signing</div>
+            <div class="linux-section-row">
+              <button id="btn-account" class="tb-btn small" data-i18n="account.title">Apple account</button>
+              <button id="btn-ios-sdk" class="tb-btn small" data-i18n="sdk.title">iOS SDK</button>
+              <button id="btn-ds-certificates" class="tb-btn small" data-i18n="account.certificates">Certificates</button>
+              <button id="btn-ds-profiles" class="tb-btn small" data-i18n="account.profiles">Profiles</button>
+              <button id="btn-ds-devices" class="tb-btn small" data-i18n="account.devices">Devices</button>
+              <button id="btn-sideloadly" class="tb-btn small" data-i18n="sideloadly.install">Sideloadly</button>
+              <button id="btn-zsign" class="tb-btn small" data-i18n="zsign.title">Sign .ipa</button>
+            </div>
           </div>
 
           <button id="btn-xcode-project" class="tb-btn wide hidden">Xcode project</button>

@@ -154,6 +154,7 @@ contextBridge.exposeInMainWorld('fcode', {
     convert: (options) => call('xcode:convert', options),
     convertFull: (options) => call('xcode:convertFull', options),
     probe: (projectPath) => call('xcode:probe', projectPath),
+    makeProject: (options) => call('xcode:makeProject', options),
   },
 
   about: {
