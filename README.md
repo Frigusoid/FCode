@@ -1,6 +1,7 @@
 # [FCode](https://github.com/Frigusoid/FCode/releases)
 
 An Xcode-like IDE for Windows: write Swift/SwiftUI, build `.ipa` via xtool in WSL, no Mac required.
+compatibility with Xcode projects!!!!!!!!!!
 
 > [!WARNING]
 > **EARLY DEVELOPMENT STAGE.** 
