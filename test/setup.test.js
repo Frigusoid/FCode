@@ -30,6 +30,22 @@ test('encodeScript: результат не содержит символов, �
   assert.strictEqual(/["'\n\r$]/.test(wrapped), false);
 });
 
+/**
+ * WSL не смогла запустить экземпляр (например, не хватило памяти).
+ *
+ * Это состояние машины, а не ошибка кода: такие проверки пропускаем, иначе
+ * `npm test` падает у любого, у кого WSL временно недоступен.
+ */
+function wslUnavailable(result) {
+  return Boolean(
+    result &&
+      !result.ok &&
+      /ERROR_NO_SYSTEM_RESOURCES|CreateInstance|CreateVm|Недостаточно системных ресурсов/i.test(
+        result.output || result.error || '',
+      ),
+  );
+}
+
 test('скрипт доходит до bash без искажений: переменные и кавычки целы', async (t) => {
   const env = await xtool.checkEnvironment();
   if (!env.distro) {
@@ -48,6 +64,11 @@ echo "quote=[\\"двойные\\"]"`;
 
   const result = await setup.runAsRoot(env.distro, script);
 
+  if (wslUnavailable(result)) {
+    t.skip('WSL не запускается на этой машине');
+    return;
+  }
+
   assert.strictEqual(result.ok, true, `скрипт упал: ${result.output}`);
   // Главное: значения переменных не потерялись. До перехода на base64 здесь
   // было "ID=[] PLATFORM=[]" — Windows съедал кавычки и знаки $.
@@ -64,6 +85,12 @@ test('probeDistro: дистрибутив отвечает и печатает r
   }
 
   const probe = await setup.probeDistro(env.distro);
+
+  if (wslUnavailable(probe)) {
+    t.skip('WSL не запускается на этой машине');
+    return;
+  }
+
   assert.strictEqual(probe.ok, true, `дистрибутив не ответил: ${JSON.stringify(probe)}`);
   assert.match(probe.output, /ready/);
 });

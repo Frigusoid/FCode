@@ -20,8 +20,9 @@
  * 4. Макросы #Preview есть только в Xcode: в SwiftPM они не собираются.
  * 5. Код, написанный под Swift 5, в режиме Swift 6 даёт десятки ошибок
  *    изоляции акторов — цели объявляются в языковом режиме 5.
- * 6. Зависимость, тянущая системную библиотеку хоста (ZIPFoundation → libz.so),
- *    ломает линковку под iOS.
+ * 6. ZIPFoundation выбрасывать нельзя: без него код с `import ZIPFoundation`
+ *    падает на «no such module». Пакет остаётся зависимостью, а нужная ему
+ *    системная zlib подключается через linkerSettings: .linkedLibrary("z").
  *
  * Файлы исходного проекта не изменяются: конвертация идёт в копию.
  */
@@ -32,10 +33,23 @@ const xcode = require('./xcode');
 const xcodeproj = require('./xcodeproj');
 
 /** Пакеты, которые тянут библиотеки хоста и ломают линковку под iOS. */
-const HOST_LINKED_PACKAGES = ['ZIPFoundation'];
 
 /** Известные плохие манифесты: tools-version ниже используемых платформ. */
 const BROKEN_MANIFEST_PACKAGES = ['swiftui-cached-async-image'];
+
+/**
+ * Пакеты, чей манифест тянет системную библиотеку хоста.
+ *
+ * ZIPFoundation объявляет `.systemLibrary(name: "CZLib", pkgConfig: "zlib")`.
+ * Для Linux это нормально, но при линковке под iOS в командной строке
+ * оказывается `-L/usr/lib/x86_64-linux-gnu` и `-lz` находит ELF-овую
+ * libz.so — ld64.lld отвечает «unhandled file type» и сборка падает.
+ *
+ * Поэтому исходники такого пакета переносим внутрь проекта отдельной целью:
+ * манифест с pkgConfig больше не участвует, а `-lz` берётся из iOS SDK
+ * (там есть libz.tbd) через наш linkerSettings.
+ */
+const SYSTEM_LIBRARY_PACKAGES = ['zipfoundation'];
 
 /** Файлы и папки, которые незачем переносить. */
 const SKIP_NAMES = new Set([
@@ -98,6 +112,131 @@ function findNestedPackages(root) {
   }
 
   return found;
+}
+
+/**
+ * Найти повторные объявления `let`/`var` в одной области видимости.
+ *
+ * Swift запрещает два объявления с одним именем в одном блоке, но проект
+ * спокойно доезжает до сборки, и там ошибка выглядит как «invalid redeclaration
+ * of 'url'» без объяснений. Ищем такие места сразу после конвертации, чтобы
+ * предупредить до сборки.
+ *
+ * Область видимости — стек вложенности фигурных скобок: конфликт есть только
+ * при полном совпадении пути вложенности.
+ *
+ * @param {string} filePath
+ * @returns {Array<{name: string, firstLine: number, secondLine: number}>}
+ */
+function findDuplicateDeclarations(filePath) {
+  let text;
+  try {
+    text = fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return [];
+  }
+
+  const lines = text.split('\n');
+  const duplicates = [];
+  // Путь вложенности — из уникальных номеров блоков, а не из глубины: два
+  // разных блока на одной глубине не должны считаться одним и тем же местом.
+  const stack = [];
+  const visible = new Map();
+  let counter = 0;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.trim().startsWith('//')) continue;
+
+    const declaration = /^\s*(?:let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=]+)?=/.exec(line);
+    if (declaration) {
+      const key = `${stack.join('/')}::${declaration[1]}`;
+      const previous = visible.get(key);
+      if (previous) {
+        duplicates.push({ name: declaration[1], firstLine: previous, secondLine: index + 1 });
+      } else {
+        visible.set(key, index + 1);
+      }
+    }
+
+    for (const ch of line) {
+      if (ch === '{') {
+        counter += 1;
+        stack.push(counter);
+      } else if (ch === '}') {
+        const closed = stack.pop();
+        if (closed === undefined) continue;
+
+        // Всё, что было объявлено внутри закрытого блока, больше не видно.
+        const prefix = `${stack.join('/')}/${closed}::`;
+        for (const key of [...visible.keys()]) {
+          if (key.startsWith(prefix)) visible.delete(key);
+        }
+      }
+    }
+  }
+
+  return duplicates;
+}
+
+/** Сколько .swift-файлов внутри папки (с подпапками). */
+function countSwiftFiles(dir) {
+  let count = 0;
+
+  const walk = (current) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      if (entry.name === '.build' || entry.name === 'Tests') continue;
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith('.swift')) count += 1;
+    }
+  };
+
+  if (fs.existsSync(dir)) walk(dir);
+  return count;
+}
+
+/**
+ * Перенести исходники вложенных папок из Packages/ внутрь цели приложения.
+ *
+ * Xcode держит такие папки в составе самой цели — часто это вообще не пакет,
+ * а просто набор файлов (в Pocket Poster у GIFImage нет Package.swift), и код
+ * пользуется их типами без `import`. SwiftPM вынес бы их в отдельный модуль, и
+ * без импорта сборка падала бы на «cannot find 'GIFImage' in scope». Копируем
+ * файлы в цель — поведение остаётся прежним.
+ *
+ * @param {string} sourceRoot папка исходников приложения
+ * @param {string} sourcesDir папка назначения (Sources/<Цель>)
+ * @returns {Array<{name: string, files: number}>}
+ */
+function inlineSourcePackages(sourceRoot, sourcesDir) {
+  const result = [];
+  const packagesDir = path.join(sourceRoot, 'Packages');
+  if (!fs.existsSync(packagesDir) || !fs.statSync(packagesDir).isDirectory()) return result;
+
+  for (const entry of fs.readdirSync(packagesDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+
+    const packagePath = path.join(packagesDir, entry.name);
+
+    // Берём папку Sources, если она есть, иначе саму папку — но без манифеста
+    // и тестов: Package.swift внутри цели SwiftPM считает лишним файлом.
+    const innerSources = path.join(packagePath, 'Sources');
+    const from = fs.existsSync(innerSources) ? innerSources : packagePath;
+
+    const swiftFiles = countSwiftFiles(from);
+    if (swiftFiles === 0) continue;
+
+    const to = path.join(sourcesDir, entry.name);
+    const files = copyTree(from, to, {
+      skip: (item) => item.name === 'Tests' || item.name === 'Package.swift'
+        || item.name === '.build' || item.name.endsWith('.xcodeproj'),
+    });
+
+    if (files > 0) result.push({ name: entry.name, files });
+  }
+
+  return result;
 }
 
 /**
@@ -202,7 +341,7 @@ function buildManifest(analysis, options, notes) {
   // Только те пакеты, чьи исходники реально оказались внутри проекта.
   const vendored = options.vendored || [];
   const broken = matchesPackage(analysis, BROKEN_MANIFEST_PACKAGES);
-  const hostLinked = matchesPackage(analysis, HOST_LINKED_PACKAGES);
+  const systemLinked = matchesPackage(analysis, SYSTEM_LIBRARY_PACKAGES);
 
   const targetName = analysis.sourceDir && /^[A-Za-z0-9_]+$/.test(analysis.sourceDir)
     ? moduleName
@@ -222,11 +361,6 @@ function buildManifest(analysis, options, notes) {
     lines.push('// его манифест объявляет tools-version ниже, чем используемые в нём');
     lines.push('// платформы (в частности visionOS), и Swift отвергает весь проект целиком.');
   }
-  if (hostLinked.length) {
-    lines.push('//');
-    lines.push(`// ${hostLinked.map((p) => p.name || p.product).join(', ')} удалён: он тянет системную`);
-    lines.push('// библиотеку хоста, которую линковщик iOS не принимает.');
-  }
   lines.push('');
 
   const platforms = [`        .iOS(.v${iosVersion}),`];
@@ -244,11 +378,16 @@ function buildManifest(analysis, options, notes) {
   lines.push('        ),');
   lines.push('    ],');
 
-  // Внешние зависимости: из проекта минус отброшенные.
+  // Внешние зависимости: из проекта минус те, чьи исходники уже лежат рядом.
+  //
+  // ZIPFoundation раньше выбрасывался целиком («тянет libz.so»), и это была
+  // ошибка: код делает import ZIPFoundation, а модуля в сборке нет — проект
+  // падал на «no such module». Нужен именно пакет, а libz подключается
+  // через linkerSettings ниже.
   const external = (analysis.packages || []).filter((item) => {
     const haystack = `${item.url || ''} ${item.name || ''}`.toLowerCase();
-    if (HOST_LINKED_PACKAGES.some((n) => haystack.includes(n.toLowerCase()))) return false;
     if (BROKEN_MANIFEST_PACKAGES.some((n) => haystack.includes(n.toLowerCase()))) return false;
+    if (SYSTEM_LIBRARY_PACKAGES.some((n) => haystack.includes(n.toLowerCase()))) return false;
     return Boolean(item.url);
   });
 
@@ -362,6 +501,29 @@ function convert(rootPath, options = {}) {
   });
   notes.push(`перенесено файлов: ${copied}`);
 
+  // 1a. Вложенные пакеты внутри папки исходников.
+  //
+  // Xcode держал их файлы в составе самой цели: в Pocket Poster код пишет
+  // GIFImage(...) без import, потому что модуль был один. Если такие файлы не
+  // перенести, сборка падает на «cannot find 'GIFImage' in scope». Поэтому
+  // копируем их исходники в цель приложения — так же, как это делал Xcode.
+  const inlinedPackages = inlineSourcePackages(sourceRoot, sourcesDir);
+  for (const item of inlinedPackages) {
+    notes.push(`исходники ${item.name} добавлены в цель: Xcode компилировал их в составе приложения`);
+  }
+
+  // 1b. Повторные объявления в одном блоке: Swift их не примет, и сборка
+  // упадёт на «invalid redeclaration». Сообщаем сразу, с файлом и строкой.
+  for (const file of walkSwift(sourcesDir)) {
+    for (const duplicate of findDuplicateDeclarations(file)) {
+      const relative = path.relative(outputDir, file).replace(/\\/g, '/');
+      notes.push(
+        `повторное объявление: ${relative}:${duplicate.secondLine} — переменная ${duplicate.name} `
+        + `(первое на строке ${duplicate.firstLine}); такую сборку Swift не примет`,
+      );
+    }
+  }
+
   // 2. Ресурсы, лежащие в корне рядом с исходниками.
   const resourceNames = [
     'Assets.xcassets',
@@ -391,9 +553,12 @@ function convert(rootPath, options = {}) {
   }
 
   // 4. Проблемные зависимости — копией исходника внутрь проекта.
+  // Сюда же пакеты с системной библиотекой: их манифест ломает линковку iOS.
   const broken = matchesPackage(analysis, BROKEN_MANIFEST_PACKAGES);
+  const systemLinked = matchesPackage(analysis, SYSTEM_LIBRARY_PACKAGES);
+  const vendorable = [...broken, ...systemLinked];
 
-  for (const pkg of broken) {
+  for (const pkg of vendorable) {
     const vendorName = pkg.product || pkg.name;
     const target = path.join(vendorDir, vendorName);
     const url = String(pkg.url || '');
@@ -450,7 +615,7 @@ function convert(rootPath, options = {}) {
   // 6. Манифест и настройки xtool.
   // Если исходники зависимости скачать не удалось, объявлять её цель нельзя:
   // SwiftPM упадёт на «invalid custom path for target».
-  const vendored = broken
+  const vendored = vendorable
     .map((pkg) => pkg.product || pkg.name)
     .filter((name) => fs.existsSync(path.join(vendorDir, name)));
 
@@ -681,5 +846,6 @@ module.exports = {
   ensureImport,
   walkSwift,
   BROKEN_MANIFEST_PACKAGES,
-  HOST_LINKED_PACKAGES,
+  SYSTEM_LIBRARY_PACKAGES,
+  findDuplicateDeclarations,
 };

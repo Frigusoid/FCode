@@ -85,3 +85,46 @@ test('ловит расхождение pc и unknown — из-за него с�
   assert.ok(host);
   assert.strictEqual(triples.includes(host), false, 'расхождение должно обнаруживаться');
 });
+
+test('читает triple цели из swift-sdk.json', () => {
+  const json = JSON.stringify({
+    schemaVersion: '4.0',
+    targetTriples: {
+      'arm64-apple-ios': { sdkRootPath: 'Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk' },
+      'arm64-apple-ios-simulator': { sdkRootPath: 'Developer/Platforms/iPhoneSimulator.platform/...' },
+      'arm64-apple-macosx': { sdkRootPath: '...' },
+    },
+  });
+
+  const targets = xtool.parseSdkTargets(json);
+  assert.ok(targets.includes('arm64-apple-ios'));
+  assert.ok(targets.includes('arm64-apple-ios-simulator'));
+});
+
+test('без iOS-цели список её не содержит — это и есть сломанный SDK', () => {
+  const json = JSON.stringify({
+    targetTriples: {
+      'arm64-apple-ios-simulator': {},
+      'arm64-apple-macosx': {},
+    },
+  });
+
+  const targets = xtool.parseSdkTargets(json);
+  assert.strictEqual(targets.includes('arm64-apple-ios'), false);
+});
+
+test('swift sdk list показывает имя бандла, а не triple', () => {
+  // Отсюда и путаница: список печатает «darwin», хотя компилятор ищет triple.
+  // Проверяем, что имя бандла и triple цели — разные вещи.
+  const bundleName = 'darwin';
+  const json = JSON.stringify({ targetTriples: { 'arm64-apple-ios': {} } });
+
+  assert.strictEqual(xtool.parseSdkTargets(json).includes(bundleName), false);
+  assert.ok(xtool.parseSdkTargets(json).includes('arm64-apple-ios'));
+});
+
+test('на битом swift-sdk.json возвращает пустой список', () => {
+  assert.deepStrictEqual(xtool.parseSdkTargets('не json'), []);
+  assert.deepStrictEqual(xtool.parseSdkTargets(''), []);
+  assert.deepStrictEqual(xtool.parseSdkTargets('нет'), []);
+});

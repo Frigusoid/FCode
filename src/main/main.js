@@ -28,6 +28,10 @@ const xcode = require('./modules/xcode');
 const xcodeproj = require('./modules/xcodeproj');
 const converter = require('./modules/converter');
 const icon = require('./modules/icon');
+const packages = require('./modules/packages');
+const projectSettings = require('./modules/project-settings');
+const mirror = require('./modules/mirror');
+const wslExec = require('./modules/wsl-exec');
 const wslTerminal = require('./modules/wsl-terminal');
 const zsign = require('./modules/zsign');
 const setup = require('./modules/setup');
@@ -751,6 +755,77 @@ function aboutInfo() {
     });
   });
 
+  // --- зависимости SwiftPM ---
+  // Package.swift — код, поэтому правки идут через модуль packages: он правит
+  // текст и проверяет, что файл остался целым.
+  handle('packages:read', (_event, projectPath) => {
+    const target = projectPath || currentWorkspacePath;
+    if (!target) throw new Error(t('main.noWorkspace'));
+    return packages.read(target);
+  });
+
+  handle('packages:add', (_event, options) => {
+    const settings = options || {};
+    const target = settings.projectPath || currentWorkspacePath;
+    if (!target) throw new Error(t('main.noWorkspace'));
+    return packages.add(target, settings);
+  });
+
+  handle('packages:setVersion', (_event, options) => {
+    const settings = options || {};
+    const target = settings.projectPath || currentWorkspacePath;
+    if (!target) throw new Error(t('main.noWorkspace'));
+    return packages.setVersion(target, settings);
+  });
+
+  // --- настройки проекта ---
+  handle('project:settings:read', (_event, projectPath) => {
+    const target = projectPath || currentWorkspacePath;
+    if (!target) throw new Error(t('main.noWorkspace'));
+    return projectSettings.read(target);
+  });
+
+  handle('project:settings:write', (_event, options) => {
+    const settings = options || {};
+    const target = settings.projectPath || currentWorkspacePath;
+    if (!target) throw new Error(t('main.noWorkspace'));
+    return projectSettings.write(target, settings);
+  });
+
+  handle('packages:remove', (_event, options) => {
+    const settings = options || {};
+    const target = settings.projectPath || currentWorkspacePath;
+    if (!target) throw new Error(t('main.noWorkspace'));
+    return packages.remove(target, settings);
+  });
+
+  // Скачивание: SwiftPM не умеет работать через /mnt, поэтому собираем в
+  // зеркале — как и сборка.
+  handle('packages:resolve', async (_event, options) => {
+    const settings = options || {};
+    const target = settings.projectPath || currentWorkspacePath;
+    if (!target) throw new Error(t('main.noWorkspace'));
+
+    const distro = settings.distro || xtool.DEFAULT_DISTRO;
+    const prepared = await mirror.sync({
+      windowsPath: target,
+      distro,
+      onOutput: (text) => send('xtool:output', { stream: 'build', text }),
+    });
+
+    const command = `cd ${JSON.stringify(prepared.mirrorPath)} && swift package resolve`;
+    send('xtool:output', { stream: 'build', text: `$ swift package resolve\n` });
+
+    const result = await wslExec.run({
+      distro,
+      user: null,
+      script: command,
+      onOutput: (text) => send('xtool:output', { stream: 'build', text }),
+    });
+
+    return { ok: result.ok, code: result.code };
+  });
+
   handle('xtool:build', async (_event, options) => {
     if (!options || !options.projectPath) throw new Error(t('main.noProjectPath'));
     send('xtool:output', {
@@ -1023,6 +1098,24 @@ function aboutInfo() {
     return true;
   });
 
+  // Перезапуск подсистемы Linux: `wsl --shutdown` гасит все дистрибутивы.
+  // Языковой сервер живёт внутри WSL, поэтому его останавливаем заранее —
+  // иначе он останется висеть с мёртвым соединением.
+  handle('wsl:restart', async () => {
+    if (lspClient) {
+      try {
+        lspClient.stop();
+      } catch {
+        /* уже остановлен */
+      }
+      lspClient = null;
+      send('lsp:status', { running: false, reason: 'restart' });
+    }
+
+    const result = await wslTerminal.shutdown();
+    return result;
+  });
+
   handle('lsp:state', () => ({
     running: Boolean(lspClient && lspClient.open),
     project: currentWorkspacePath,
@@ -1083,9 +1176,10 @@ function aboutInfo() {
   handle('xtool:terminal', async (_event, command, distro) => {
     const target = distro || xtool.DEFAULT_DISTRO;
 
-    // wsl.exe из Program Files и --cd ~: консоль открывается в домашней папке
-    // Linux. Сборка аргументов вынесена в wsl-terminal, её проверяют тесты.
-    const child = spawn('cmd.exe', ['/c', 'start', '', wslTerminal.executable(), ...wslTerminal.args(command, target)], {
+    // Через .cmd-обёртку: cmd заново разбирает строку и ломает кавычки, из-за
+    // чего окно открывалось пустым. Внутри файла аргументы уже безопасны.
+    const shim = wslTerminal.writeShim(command, target);
+    const child = spawn('cmd.exe', ['/c', 'start', '', shim], {
       detached: true,
       stdio: 'ignore',
       windowsHide: false,
@@ -1338,6 +1432,14 @@ function buildMenu() {
         { type: 'separator' },
         // Эти две вещи убраны с панели, чтобы не плодить кнопки, но остаются
         // доступными из меню.
+        {
+          label: t('menu.projectSettings'),
+          click: () => send('menu:projectSettings'),
+        },
+        {
+          label: t('menu.packages'),
+          click: () => send('menu:packages'),
+        },
         {
           label: t('menu.previewLayout'),
           accelerator: 'CmdOrCtrl+Shift+P',

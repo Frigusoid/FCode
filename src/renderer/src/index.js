@@ -297,6 +297,8 @@ function buildTreeDom(node, depth) {
 
     row.oncontextmenu = (event) => {
       event.preventDefault();
+      // Иначе всплывёт до контейнера дерева и меню откроется дважды.
+      event.stopPropagation();
       state.selectedPath = child.path;
       openContextMenu(event, child);
     };
@@ -1204,6 +1206,200 @@ async function handleMakeXcodeProject() {
     log(t('xcode.madeHint'), 'dim');
   } catch (error) {
     log(t('xcode.makeFailed', { error: error.message || String(error) }), 'error');
+  }
+}
+
+/**
+ * Настройки проекта: имя, bundle id, версия iOS.
+ *
+ * Поля пишутся в два файла: bundle id — в xtool.yml, имя и версия iOS — в
+ * Package.swift. Подписи говорят, куда именно попадёт значение, чтобы не
+ * было сюрпризов.
+ */
+async function handleProjectSettings() {
+  if (!state.workspace) {
+    log(t('project.noProject'), 'warn');
+    return;
+  }
+
+  const current = await api.projectSettings.read(state.workspace.path);
+
+  const answer = await modal({
+    title: t('project.title'),
+    body: `
+      <div class="wizard">
+        <label class="wizard-row">
+          <span>${esc(t('project.name'))}</span>
+          <input id="set-name" class="field-input wide" value="${esc(current.name || '')}" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="wizard-row">
+          <span>${esc(t('project.bundleId'))}</span>
+          <input id="set-bundle" class="field-input wide" value="${esc(current.bundleId || '')}" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="wizard-row">
+          <span>${esc(t('project.ios'))}</span>
+          <input id="set-ios" class="field-input wide" value="${esc(current.iosVersion || '17')}" autocomplete="off" spellcheck="false" />
+        </label>
+      </div>
+      <div class="pkg-hint">${esc(t('project.hint'))}</div>`,
+    buttons: [
+      { label: t('modal.save'), value: 'save', primary: true },
+      { label: t('modal.cancel'), value: null },
+    ],
+  });
+
+  if (answer !== 'save') return;
+
+  const read = (id) => document.getElementById(id)?.value.trim() || '';
+  try {
+    const result = await api.projectSettings.write({
+      projectPath: state.workspace.path,
+      name: read('set-name'),
+      bundleId: read('set-bundle'),
+      iosVersion: read('set-ios'),
+    });
+
+    log(
+      result.changed.length
+        ? t('settings.saved', { list: result.changed.join(', ') })
+        : t('project.unchanged'),
+      result.changed.length ? 'ok' : 'dim',
+    );
+    await refreshTree();
+  } catch (error) {
+    log(t('settings.failed', { error: error.message }), 'error');
+  }
+}
+
+/**
+ * Окно зависимостей SwiftPM.
+ *
+ * Показывает подключённые пакеты, даёт добавить новый по адресу и версии,
+ * удалить лишний и скачать всё через `swift package resolve`. Правки идут в
+ * Package.swift через основной процесс — там же проверяется, что файл цел.
+ */
+async function handlePackages() {
+  if (!state.workspace) {
+    log(t('pkg.noProject'), 'warn');
+    return;
+  }
+
+  let data = await api.packages.read(state.workspace.path);
+
+  const renderRows = (list) => {
+    if (!list.length) return `<div class="pkg-empty">${esc(t('pkg.empty'))}</div>`;
+
+    return list
+      .map(
+        (pkg) => `<div class="pkg-row">
+          <div class="pkg-main">
+            <strong>${esc(pkg.name)}</strong>
+            <span class="pkg-url">${esc(pkg.url)}</span>
+          </div>
+          <button class="tb-btn small pkg-version-edit" data-url="${esc(pkg.url)}" data-version="${esc(pkg.requirement.value || '')}">${esc(pkg.requirement.value || '—')}</button>
+          <button class="tb-btn small pkg-remove" data-url="${esc(pkg.url)}">${esc(t('pkg.remove'))}</button>
+        </div>`,
+      )
+      .join('');
+  };
+
+  const buildBody = (list) => `
+    <div class="pkg-list">${renderRows(list)}</div>
+    <div class="section-title">${esc(t('pkg.addTitle'))}</div>
+    <div class="pkg-add">
+      <input id="pkg-url" class="field-input" placeholder="https://github.com/user/repo" autocomplete="off" spellcheck="false" />
+      <input id="pkg-version" class="field-input small" placeholder="1.0.0" autocomplete="off" spellcheck="false" />
+      <button id="pkg-add" class="tb-btn small primary">${esc(t('pkg.add'))}</button>
+    </div>
+    <div class="pkg-hint">${esc(t('pkg.hint'))}</div>`;
+
+  const answer = await modal({
+    title: t('pkg.title'),
+    body: buildBody(data.packages),
+    buttons: [
+      { label: t('pkg.resolve'), value: 'resolve', primary: true },
+      { label: t('modal.close'), value: null },
+    ],
+    onRender: ({ root }) => {
+      // Удаление перерисовывает список на месте, не закрывая окно.
+      root.addEventListener('click', async (event) => {
+        const editButton = event.target.closest('.pkg-version-edit');
+        if (editButton) {
+          // Версию спрашиваем здесь же: у пакета одна строка требования.
+          const value = await promptInput(t('pkg.editVersion'), editButton.dataset.version);
+          if (!value) return;
+
+          try {
+            data = await api.packages.setVersion({
+              projectPath: state.workspace.path,
+              url: editButton.dataset.url,
+              version: value,
+            });
+            root.innerHTML = buildBody(data.packages);
+            log(t('pkg.versionChanged', { name: editButton.dataset.url, version: value }), 'ok');
+          } catch (error) {
+            log(t('pkg.versionFailed', { error: error.message }), 'error');
+          }
+          return;
+        }
+
+        const button = event.target.closest('.pkg-remove');
+        if (!button) return;
+
+        event.preventDefault();
+        try {
+          data = await api.packages.remove({
+            projectPath: state.workspace.path,
+            url: button.dataset.url,
+          });
+          root.innerHTML = buildBody(data.packages);
+          log(t('pkg.removed', { name: button.dataset.url }), 'ok');
+        } catch (error) {
+          log(t('pkg.removeFailed', { error: error.message }), 'error');
+        }
+      });
+
+      const addButton = root.querySelector('#pkg-add');
+      if (!addButton) return;
+
+      addButton.onclick = async () => {
+        const url = root.querySelector('#pkg-url').value.trim();
+        const version = root.querySelector('#pkg-version').value.trim();
+
+        if (!url) {
+          log(t('pkg.needUrl'), 'warn');
+          return;
+        }
+
+        try {
+          data = await api.packages.add({
+            projectPath: state.workspace.path,
+            url,
+            version: version || '1.0.0',
+          });
+          root.innerHTML = buildBody(data.packages);
+          log(t('pkg.added', { name: url }), 'ok');
+        } catch (error) {
+          log(t('pkg.addFailed', { error: error.message }), 'error');
+        }
+      };
+    },
+  });
+
+  if (answer === 'resolve') {
+    logHead(t('pkg.resolving'));
+    setBusy(true, 'status.busy');
+    try {
+      const result = await api.packages.resolve({
+        projectPath: state.workspace.path,
+        distro: state.xtoolDistro,
+      });
+      log(result.ok ? t('pkg.resolved') : t('pkg.resolveFailed', { code: result.code }), result.ok ? 'ok' : 'error');
+    } catch (error) {
+      log(t('pkg.resolveError', { error: error.message }), 'error');
+    } finally {
+      setBusy(false);
+    }
   }
 }
 
@@ -2244,22 +2440,37 @@ function closeContextMenu() {
 }
 
 function openContextMenu(event, node) {
+  const items = [];
+
+  // Папка, внутри которой создаём. Для файла это его папка: правый клик по
+  // файлу тоже должен позволять создать рядом новый файл или папку.
+  const isDir = node.type === 'dir';
+  const parentPath = isDir ? node.path : node.path.slice(0, node.path.length - node.name.length);
+
+  items.push({ label: t('tree.newFile'), action: () => createEntry(parentPath, false) });
+  items.push({ label: t('tree.newFolder'), action: () => createEntry(parentPath, true) });
+  items.push({ separator: true });
+
+  items.push({ label: t('tree.rename'), action: () => renameEntry(node) });
+  items.push({ label: t('tree.reveal'), action: () => api.shell.reveal(node.path) });
+  items.push({ separator: true });
+  items.push({ label: t('tree.delete'), danger: true, action: () => deleteEntry(node) });
+
+  showMenu(event.clientX, event.clientY, items);
+}
+
+/**
+ * Показать выпадающее меню в точке.
+ *
+ * Одно и то же меню используется деревом файлов и кнопкой «Project»: разметка
+ * и закрытие не должны дублироваться.
+ */
+function showMenu(x, y, items) {
   closeContextMenu();
 
   const menu = document.createElement('div');
   menu.className = 'context-menu';
   menu.id = 'context-menu';
-
-  const items = [];
-  if (node.type === 'dir') {
-    items.push({ label: t('tree.newFile'), action: () => createEntry(node.path, false) });
-    items.push({ label: t('tree.newFolder'), action: () => createEntry(node.path, true) });
-    items.push({ separator: true });
-  }
-  items.push({ label: t('tree.rename'), action: () => renameEntry(node) });
-  items.push({ label: t('tree.reveal'), action: () => api.shell.reveal(node.path) });
-  items.push({ separator: true });
-  items.push({ label: t('tree.delete'), danger: true, action: () => deleteEntry(node) });
 
   for (const item of items) {
     if (item.separator) {
@@ -2278,14 +2489,16 @@ function openContextMenu(event, node) {
     menu.appendChild(row);
   }
 
-  menu.style.left = `${Math.min(event.clientX, window.innerWidth - 210)}px`;
-  menu.style.top = `${Math.min(event.clientY, window.innerHeight - menu.childElementCount * 30 - 20)}px`;
+  menu.style.left = `${Math.min(x, window.innerWidth - 210)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - menu.childElementCount * 30 - 20)}px`;
   document.body.appendChild(menu);
 
   setTimeout(() => {
     document.addEventListener('click', closeContextMenu, { once: true });
-    document.addEventListener('contextmenu', closeContextMenu, { once: true });
     window.addEventListener('blur', closeContextMenu, { once: true });
+    // Закрытие по contextmenu здесь не вешаем: подписка с { once: true }
+    // срабатывала от следующего же правого клика и гасила только что
+    // открытое меню. Мимо дерева меню закрывает постоянный обработчик.
   }, 0);
 }
 
@@ -2973,7 +3186,7 @@ async function handleSettings() {
   // иначе нажатие кнопки выглядело как «ничего не происходит» несколько секунд.
   // Пока данных нет, значок загрузки стоит на месте таблицы.
   const pending = modal({
-    title: t('settings.title'),
+    title: t('project.title'),
     body: body(),
     buttons: [
       { label: t('settings.openRequirements'), value: 'requirements' },
@@ -3837,7 +4050,8 @@ function wireEvents() {
   $('btn-save').onclick = saveActiveFile;
   $('btn-save-all').onclick = saveAllFiles;
   $('btn-verify').onclick = handleVerify;
-  $('btn-convert').onclick = () => withBusy(() => handleConvertProject());
+  // Кнопки Convert на панели нет: при открытии проекта Xcode предложение
+  // конвертации появляется само. Ручной вызов остался в меню «Project».
   // Кнопки btn-diag больше нет: состояние инструментов переехало в настройки.
   $('btn-lsp').onclick = restartLanguageServer;
   $('tab-search').onclick = () => showSidebarTab('search');
@@ -3863,6 +4077,33 @@ function wireEvents() {
   // не нужен: он закрывал бы экран на всё время проверки WSL.
   $('btn-xtool').onclick = () => openLinuxPanel();
 
+  // Правый клик по пустому месту дерева тоже открывает меню: люди ожидают
+  // «создать файл» именно там, а не только на строке папки. Строки гасят
+  // всплытие, поэтому сюда событие приходит только с пустого места.
+  $('tree').addEventListener('contextmenu', (event) => {
+    if (!state.workspace) return;
+    event.preventDefault();
+
+    const root = state.workspace.tree;
+    openContextMenu(event, {
+      type: 'dir',
+      path: root.path,
+      name: root.name || state.workspace.name || '',
+    });
+  });
+
+  // Правый клик мимо дерева закрывает меню. Слушаем на перехвате, чтобы
+  // сработать до открытия нового меню на строке дерева.
+  document.addEventListener(
+    'contextmenu',
+    (event) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest('#tree, #context-menu')) return;
+      closeContextMenu();
+    },
+    true,
+  );
+
   $('btn-linux-close').onclick = () => linuxPanel().classList.add('hidden');
 
   // Ссылки в шапке раскрывают разделы: панель не должна быть свалкой кнопок.
@@ -3879,14 +4120,29 @@ function wireEvents() {
   $('btn-linux-run').onclick = () => runAutoSetup();
   $('btn-linux-refresh').onclick = () => withBusy(() => refreshLinux());
   $('btn-linux-help').onclick = showXtoolInfo;
-  $('btn-linux-new').onclick = () => runXtoolAction('new');
-  $('btn-linux-build').onclick = () => runXtoolAction('build');
-  $('btn-linux-install').onclick = () => runXtoolAction('install');
-  $('btn-linux-devices').onclick = () => runXtoolAction('devices');
   $('btn-account').onclick = handleAccount;
-  $('btn-linux-requirements').onclick = () => withBusy(() => handleRequirements());
   $('btn-xcode-project').onclick = handleXcodeProject;
   $('btn-zsign').onclick = handleZsign;
+
+  // Меню проекта: настройки, зависимости и действия, которым не место в
+  // панели окружения. Одна кнопка вместо ряда мелких.
+  $('btn-project').onclick = (event) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    showMenu(rect.left, rect.bottom + 6, [
+      { label: t('project.menu'), action: () => withBusy(() => handleProjectSettings()) },
+      { label: t('pkg.menu'), action: () => withBusy(() => handlePackages()) },
+      { label: t('req.button'), action: () => withBusy(() => handleRequirements()) },
+      { label: t('convert.title'), action: () => withBusy(() => handleConvertProject()) },
+      { separator: true },
+      { label: t('xcode.makeMenu'), action: () => withBusy(() => handleMakeXcodeProject()) },
+      { label: t('menu.previewLayout'), action: () => togglePreview() },
+      { separator: true },
+      { label: t('linux.newProject'), action: () => runXtoolAction('new') },
+      { label: t('linux.build'), action: () => runXtoolAction('build') },
+      { label: t('linux.install'), action: () => runXtoolAction('install') },
+      { label: t('linux.devices'), action: () => runXtoolAction('devices') },
+    ]);
+  };
   $('btn-settings').onclick = handleSettings;
   $('btn-setup-guide').onclick = () => withBusy(() => handleSetupGuide());
   $('btn-about').onclick = handleAbout;
@@ -3908,6 +4164,32 @@ function wireEvents() {
 
   $('btn-clear-console').onclick = () => {
     consoleEl.innerHTML = '';
+  };
+
+  // Перезапуск подсистемы Linux: помогает, когда WSL «залип» и команды
+  // перестали запускаться. Языковой сервер останавливает основной процесс.
+  $('btn-restart-wsl').onclick = async () => {
+    if (state.busy) return;
+
+    setBusy(true, 'status.busy');
+    logHead(t('console.restartingWsl'));
+
+    try {
+      const result = await api.wsl.restart();
+
+      if (result.ok) {
+        log(t('console.wslRestarted'), 'ok');
+        // Подсистема поднялась заново — сервер надо запустить с нуля.
+        await restartLanguageServer();
+        await refreshLinux();
+      } else {
+        log(t('console.wslRestartFailed', { error: result.error || `code ${result.code}` }), 'error');
+      }
+    } catch (error) {
+      log(t('console.wslRestartFailed', { error: error.message }), 'error');
+    } finally {
+      setBusy(false);
+    }
   };
 
   $('btn-refresh').onclick = async () => {
@@ -3961,6 +4243,8 @@ function wireEvents() {
   api.on('menu:save', saveActive);
   api.on('menu:find', () => editor && editor.openFind());
   api.on('menu:buildIpa', handleBuildClick);
+  api.on('menu:packages', () => withBusy(() => handlePackages()));
+  api.on('menu:projectSettings', () => withBusy(() => handleProjectSettings()));
   api.on('menu:previewLayout', () => togglePreview());
   api.on('menu:makeXcodeProject', () => withBusy(() => handleMakeXcodeProject()));
   api.on('menu:verifyIpa', handleVerify);

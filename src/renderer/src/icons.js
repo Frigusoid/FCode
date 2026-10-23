@@ -21,6 +21,7 @@ export const ICONS = {
   convert: { fallback: '⇄', label: 'Конвертировать проект Xcode' },
   icon: { fallback: '◈', label: 'Иконка приложения' },
   preview: { fallback: '◫', label: 'Предпросмотр вёрстки' },
+  gear: { fallback: '⚙', label: 'Меню проекта' },
   xcode: { fallback: '⌘', label: 'Создать проект Xcode' },
   settings: { fallback: '⚙', label: 'Окружение' },
   language: { fallback: '⌥', label: 'Языковой сервер Swift' },

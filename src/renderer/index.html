@@ -59,6 +59,9 @@
         </div>
 
         <div class="toolbar-group toolbar-right">
+          <button id="btn-project" class="tb-btn" data-i18n-title="toolbar.projectTitle">
+            <span class="ico" data-icon="gear" data-fallback="⚙"></span> <span data-i18n="toolbar.project">Project</span>
+          </button>
           <button id="btn-xtool" class="tb-btn" data-i18n-title="toolbar.linuxTitle">
             <span data-i18n="toolbar.linux">Requirements</span>
           </button>
@@ -67,9 +70,6 @@
           </button>
           <button id="btn-verify" class="tb-btn" data-i18n-title="toolbar.verifyTitle">
             <span class="ico" data-icon="verify" data-fallback="✓"></span> <span data-i18n="toolbar.verify">Verify</span>
-          </button>
-          <button id="btn-convert" class="tb-btn" data-i18n-title="toolbar.convertTitle">
-            <span class="ico" data-icon="convert" data-fallback="⇄"></span> <span data-i18n="toolbar.convert">Convert</span>
           </button>
           <div class="tb-sep"></div>
           <button id="btn-lsp" class="tb-btn ghost" data-i18n-title="lsp.restart">
@@ -205,22 +205,13 @@
           </div>
 
           <div class="linux-links">
-            <button class="link-btn" data-section="tools" data-i18n="linux.section.tools">Tools</button>
             <button class="link-btn" data-section="account" data-i18n="linux.link.account">Account</button>
             <button id="btn-setup-guide" class="link-btn" data-i18n="guide.more">How to install</button>
             <button id="btn-about" class="link-btn" data-i18n="about.menu">About</button>
           </div>
 
-          <div id="linux-tools" class="linux-section hidden">
-            <div class="linux-section-title" data-i18n="linux.section.tools">Tools</div>
-            <div class="linux-section-row">
-              <button id="btn-linux-requirements" class="tb-btn small" data-i18n="req.button">Requirements</button>
-              <button id="btn-linux-new" class="tb-btn small" data-i18n="linux.newProject">New project</button>
-              <button id="btn-linux-build" class="tb-btn small" data-i18n="linux.build">Build</button>
-              <button id="btn-linux-install" class="tb-btn small" data-i18n="linux.install">Install .ipa</button>
-              <button id="btn-linux-devices" class="tb-btn small" data-i18n="linux.devices">Devices</button>
-            </div>
-          </div>
+          <!-- Кнопки инструментов живут в меню «Project» на панели сверху,
+               а не здесь: это панель про окружение, а не свалка действий. -->
 
           <div id="linux-account" class="linux-section hidden">
             <div class="linux-section-title" data-i18n="linux.section.account">Account and signing</div>
@@ -248,6 +239,8 @@
           <span class="console-title" data-i18n="console.title">Console</span>
           <span id="status-pill" class="status-pill" data-i18n="status.ready">ready</span>
           <div class="console-actions">
+            <!-- Перезапуск подсистемы: после него языковой сервер поднимается заново. -->
+            <button id="btn-restart-wsl" class="icon-btn" data-i18n-title="console.restartWslTitle" data-i18n="console.restartWsl">Restart WSL</button>
             <button id="btn-clear-console" class="icon-btn" data-i18n="console.clear">Clear</button>
           </div>
         </div>

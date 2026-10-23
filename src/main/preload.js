@@ -244,6 +244,24 @@ contextBridge.exposeInMainWorld('fcode', {
     apply: (options) => call('icon:apply', options),
   },
 
+  packages: {
+    read: (projectPath) => call('packages:read', projectPath),
+    add: (options) => call('packages:add', options),
+    remove: (options) => call('packages:remove', options),
+    setVersion: (options) => call('packages:setVersion', options),
+    resolve: (options) => call('packages:resolve', options),
+  },
+
+  projectSettings: {
+    read: (projectPath) => call('project:settings:read', projectPath),
+    write: (options) => call('project:settings:write', options),
+  },
+
+  wsl: {
+    // --shutdown: перезапуск подсистемы Linux (кнопка в консоли).
+    restart: () => call('wsl:restart'),
+  },
+
   shell: {
     reveal: (target) => call('shell:reveal', target),
     open: (target) => call('shell:openPath', target),

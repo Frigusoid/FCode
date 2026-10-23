@@ -191,3 +191,172 @@ test('не считает обычную папку проектом Xcode', () 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fcode-plain-'));
   assert.strictEqual(converter.isXcodeProject(dir), false);
 });
+
+test('переносит Info.plist и ссылается на него в .xcodeproj', () => {
+  const root = makeProject();
+  // Xcode держит plist рядом с .xcodeproj, через дефис.
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleURLTypes</key>
+  <array><dict><key>CFBundleURLSchemes</key><array><string>demo</string></array></dict></array>
+</dict>
+</plist>
+`;
+  fs.writeFileSync(path.join(root, 'Demo-Info.plist'), plist, 'utf8');
+
+  const result = converter.convert(root, { overwrite: true });
+
+  assert.strictEqual(result.infoPlist, 'Info.plist', 'plist должен быть перенесён');
+  assert.match(fs.readFileSync(path.join(result.outputDir, 'Info.plist'), 'utf8'), /CFBundleURLSchemes/);
+
+  const pbxproj = fs.readFileSync(path.join(result.outputDir, 'Demo.xcodeproj', 'project.pbxproj'), 'utf8');
+  assert.match(pbxproj, /INFOPLIST_FILE = Info\.plist;/);
+  assert.doesNotMatch(
+    pbxproj,
+    /GENERATE_INFOPLIST_FILE/,
+    'синтезированный plist отключён, иначе настройки конфликтуют',
+  );
+});
+
+test('ZIPFoundation остаётся зависимостью, а не выбрасывается', () => {
+  const root = makeProject();
+
+  // Пакет в проекте Xcode.
+  const projFile = path.join(root, 'Demo.xcodeproj', 'project.pbxproj');
+  const original = fs.readFileSync(projFile, 'utf8');
+  const withPackage = original.replace(
+    '/* Begin XCBuildConfiguration section */',
+    `/* Begin XCRemoteSwiftPackageReference section */
+		EE0001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/weichsel/ZIPFoundation";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.9.19;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+/* Begin XCBuildConfiguration section */`,
+  );
+  fs.writeFileSync(projFile, withPackage, 'utf8');
+
+  // Код действительно импортирует модуль - именно на этом проект и падал.
+  fs.writeFileSync(
+    path.join(root, 'Demo', 'Archive.swift'),
+    'import Foundation\nimport ZIPFoundation\n\nstruct Archive { let url: URL }\n',
+    'utf8',
+  );
+
+  const result = converter.convert(root, { overwrite: true });
+  const manifest = fs.readFileSync(path.join(result.outputDir, 'Package.swift'), 'utf8');
+
+  // Пакет с системной библиотекой переносится исходниками: его манифест
+  // объявляет CZLib через pkgConfig, и при линковке под iOS подхватывалась
+  // линуксовая libz.so, на которой ld64.lld падал с «unhandled file type».
+  assert.doesNotMatch(
+    manifest,
+    /\.package\(url: "https:\/\/github\.com\/weichsel\/ZIPFoundation"/,
+    'пакет не должен подключаться как удалённый',
+  );
+  assert.match(
+    manifest,
+    /name: "ZIPFoundation",\s*\n\s*path: "Vendor\/ZIPFoundation"/,
+    'должна появиться локальная цель из исходников',
+  );
+  assert.match(manifest, /^\s+"ZIPFoundation",$/m, 'цель приложения должна зависеть от неё');
+  // libz подключается линкером — без него ZIPFoundation не соберётся.
+  assert.match(manifest, /linkedLibrary\("z"\)/);
+});
+
+test('папка из Packages без манифеста попадает в цель приложения', () => {
+  const root = makeProject();
+
+  // Xcode держит такую папку в составе цели: манифеста у неё нет.
+  const extra = path.join(root, 'Demo', 'Packages', 'GIFImage', 'Sources');
+  fs.mkdirSync(extra, { recursive: true });
+  fs.writeFileSync(path.join(extra, 'GIFImage.swift'), 'import SwiftUI\n\nstruct GIFImage: View { var body: some View { EmptyView() } }\n', 'utf8');
+
+  const result = converter.convert(root, { overwrite: true });
+  const target = path.join(result.outputDir, 'Sources', result.moduleName);
+
+  assert.ok(
+    fs.existsSync(path.join(target, 'GIFImage', 'GIFImage.swift')),
+    'файлы папки должны компилироваться в составе цели',
+  );
+  assert.ok(
+    !fs.existsSync(path.join(target, 'Packages')),
+    'саму папку Packages переносить не нужно',
+  );
+});
+
+test('находит повторное объявление в одной функции', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fcode-dup-'));
+  const file = path.join(dir, 'Sample.swift');
+
+  fs.writeFileSync(
+    file,
+    `struct A {
+    func run() {
+        let url = first()
+        work(url)
+        let url = second()
+        use(url)
+    }
+}
+`,
+    'utf8',
+  );
+
+  const duplicates = converter.findDuplicateDeclarations(file);
+  assert.strictEqual(duplicates.length, 1);
+  assert.deepStrictEqual(duplicates[0], { name: 'url', firstLine: 3, secondLine: 5 });
+});
+
+test('одноимённые переменные в разных функциях — не конфликт', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fcode-dup-'));
+  const file = path.join(dir, 'Sample.swift');
+
+  fs.writeFileSync(
+    file,
+    `struct A {
+    func one() {
+        let url = first()
+    }
+
+    func two() {
+        let url = second()
+    }
+}
+`,
+    'utf8',
+  );
+
+  assert.deepStrictEqual(converter.findDuplicateDeclarations(file), []);
+});
+
+test('вложенный блок не конфликтует с внешним', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fcode-dup-'));
+  const file = path.join(dir, 'Sample.swift');
+
+  fs.writeFileSync(
+    file,
+    `func run() {
+    let url = first()
+    if condition {
+        let url = second()
+        use(url)
+    }
+    use(url)
+}
+`,
+    'utf8',
+  );
+
+  assert.deepStrictEqual(converter.findDuplicateDeclarations(file), []);
+});
+
+test('ZIPFoundation помечен как пакет с системной библиотекой', () => {
+  assert.ok(converter.SYSTEM_LIBRARY_PACKAGES.includes('zipfoundation'));
+});
