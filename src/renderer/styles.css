@@ -370,11 +370,11 @@ button, select, input { font-family: inherit; font-size: inherit; color: inherit
 
 .editor-host .cm-editor { height: 100%; }
 
-.editor-host .cm-scroller { font-family: var(--font-mono); font-size: 13px; line-height: 1.55; }
+.editor-host .cm-scroller { font-family: var(--font-mono); font-size: var(--editor-font-size, 13px); line-height: 1.55; }
 
 .editor-path { padding: 3px 10px; font-size: 10.5px; color: var(--text-faint); background: var(--bg-editor); border-bottom: 1px solid var(--border-soft); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.welcome { position: absolute; inset: 0px; display: flex; align-items: center; justify-content: center; background: var(--bg-editor); overflow: auto; }
+.welcome { position: absolute; inset: 0px; display: flex; align-items: flex-start; justify-content: center; padding: 22px 0px 28px; background: var(--bg-editor); overflow: auto; }
 
 .welcome.hidden { display: none; }
 
@@ -382,9 +382,9 @@ button, select, input { font-family: inherit; font-size: inherit; color: inherit
 
 .welcome-logo { font-size: 42px; font-weight: 300; letter-spacing: 0.01em; background: linear-gradient(135deg, #a855f7, #6366f1) text; color: transparent; }
 
-.welcome-sub { color: var(--text-dim); margin: 6px 0px 26px; }
+.welcome-sub { color: var(--text-dim); margin: 6px 0px 18px; }
 
-.welcome-actions { display: flex; gap: 10px; justify-content: center; margin-bottom: 26px; }
+.welcome-actions { display: flex; gap: 10px; justify-content: center; margin-bottom: 18px; }
 
 .welcome-note { text-align: left; font-size: 12px; line-height: 1.65; color: var(--text-dim); background: var(--bg-sidebar); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
 
@@ -1946,3 +1946,151 @@ button, select, input { font-family: inherit; font-size: inherit; color: inherit
   border: 1px dashed var(--border, #2a2436);
   border-radius: 8px;
 }
+
+/* ------------------------------------------------------------ цветовые схемы */
+
+/*
+ * Тема — это только переопределение переменных на body. Всё остальное в
+ * стилях уже ссылается на переменные, поэтому смена схемы не требует
+ * перерисовки разметки.
+ */
+
+body[data-theme="green"] {
+  --bg-app: #101a14; --bg-toolbar: #16241c; --bg-sidebar: #121d16;
+  --bg-editor: #0f1813; --bg-console: #0b120e; --bg-elevated: #1e3327;
+  --bg-hover: #28472f; --bg-selected: #16a34a; --border: #2b4a36;
+  --border-soft: #1f3628; --text: #e9f5ec; --text-dim: #a3c4ad;
+  --text-faint: #708c78; --accent: #22c55e; --accent-hover: #4ade80;
+}
+
+body[data-theme="blue"] {
+  --bg-app: #0f1622; --bg-toolbar: #16202f; --bg-sidebar: #111a26;
+  --bg-editor: #0e1520; --bg-console: #0a1018; --bg-elevated: #1d2c40;
+  --bg-hover: #27405c; --bg-selected: #2563eb; --border: #2a3d57;
+  --border-soft: #1d2c3f; --text: #e8eefb; --text-dim: #9fb2d0;
+  --text-faint: #6f82a0; --accent: #3b82f6; --accent-hover: #60a5fa;
+}
+
+body[data-theme="red"] {
+  --bg-app: #1a1012; --bg-toolbar: #251619; --bg-sidebar: #1d1315;
+  --bg-editor: #180f11; --bg-console: #120b0d; --bg-elevated: #33202a;
+  --bg-hover: #482a33; --bg-selected: #dc2626; --border: #4a2b33;
+  --border-soft: #38202a; --text: #f7e9ea; --text-dim: #c9a6aa;
+  --text-faint: #8f6a70; --accent: #ef4444; --accent-hover: #f87171;
+}
+
+/* Выбор темы в настройках: четыре цветных кружка. */
+.theme-row { display: flex; gap: 10px; align-items: center; }
+
+.theme-swatch {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-elevated); cursor: pointer; min-width: 74px;
+}
+
+.theme-swatch:hover { background: var(--bg-hover); }
+.theme-swatch.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+
+.theme-dot {
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+}
+
+.theme-name { font-size: 11px; color: var(--text-dim); }
+.theme-swatch.active .theme-name { color: var(--text); }
+
+/* ------------------------------------------------------- недавние проекты */
+
+.welcome-recent {
+  margin: 18px auto 0;
+  width: 100%;
+  max-width: 460px;
+  text-align: left;
+}
+
+.welcome-recent-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--text-faint);
+  margin-bottom: 8px;
+}
+
+.recent-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 9px 12px;
+  margin-bottom: 6px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.recent-item:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+
+.recent-name { font-size: 13px; font-weight: 600; }
+
+.recent-path {
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+/* Подсказка с путём к образу Xcode в панели требований. */
+.linux-section-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-faint);
+  word-break: break-all;
+}
+
+.linux-section-hint.ok { color: var(--text-dim); }
+.linux-section-hint.missing { color: var(--yellow); }
+
+/* ---------------------------------------------------- ручки изменения панелей */
+
+.sidebar, .inspector, .console { position: relative; }
+
+.panel-resizer {
+  position: absolute;
+  z-index: 20;
+  background: transparent;
+}
+
+.panel-resizer-x {
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  cursor: col-resize;
+}
+
+.panel-resizer-y {
+  left: 0;
+  right: 0;
+  height: 7px;
+  cursor: row-resize;
+}
+
+/* Ручка лежит на границе панели: снаружи её часть обрезается, поэтому
+   сдвигаем внутрь на пару пикселей. */
+.sidebar > .panel-resizer-x { right: -3px; }
+.inspector > .panel-resizer-x { left: -3px; }
+.console > .panel-resizer-y { top: -3px; }
+
+.panel-resizer:hover { background: var(--accent); opacity: 0.45; }
+
+body.resizing-x { cursor: col-resize; user-select: none; }
+body.resizing-y { cursor: row-resize; user-select: none; }

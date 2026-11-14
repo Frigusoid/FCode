@@ -10,6 +10,11 @@ import { createEditor } from './editor.js';
 import { mountIcons, icon } from './icons.js';
 import { parseSwiftUI, renderPreview } from './swiftui-preview.js';
 import { openSignIn } from './signin.js';
+import { THEMES, applyTheme, getTheme, storeTheme } from './theme.js';
+import { SUPPORTED_IOS } from '../../shared/ios-versions.js';
+import { RECENT_LIMIT, addRecent, readRecents, removeRecent, writeRecents } from '../../shared/recents.js';
+import { readSizes, writeSizes, sizeAfterDrag, resetSize } from '../../shared/panels.js';
+import { DEFAULT_ZOOM, nextZoom, readZoom, writeZoom } from '../../shared/editor-zoom.js';
 import {
   t,
   setLanguage,
@@ -20,6 +25,9 @@ import {
 } from './i18n.js';
 
 const api = window.fcode;
+
+// Версии iOS, под которые реально собирает тулчейн (см. shared/ios-versions.js).
+const IOS_CHOICES = SUPPORTED_IOS;
 
 // ------------------------------------------------------------------ утилиты
 
@@ -379,7 +387,9 @@ function activateTab(path) {
   const tab = state.tabs.find((item) => item.path === path);
   if (!tab) {
     renderTabs();
-    showWelcome(true);
+    // Тема применяется до первой отрисовки, чтобы не мигало фиолетовым.
+  applyTheme();
+  showWelcome(true);
     updatePathBar(null);
     return;
   }
@@ -467,7 +477,9 @@ async function closeTab(path) {
     else {
       state.activeTabPath = null;
       renderTabs();
-      showWelcome(true);
+      // Тема применяется до первой отрисовки, чтобы не мигало фиолетовым.
+  applyTheme();
+  showWelcome(true);
       updatePathBar(null);
     }
   } else {
@@ -889,9 +901,140 @@ async function offerXcodeConversion(payload) {
   }
 }
 
+/** Отложенная отправка изменений в языковой сервер. */
+let didChangeTimer = null;
+let didChangePending = null;
+
+function scheduleDidChange(filePath, text) {
+  didChangePending = { filePath, text };
+  clearTimeout(didChangeTimer);
+  didChangeTimer = setTimeout(() => {
+    const pending = didChangePending;
+    didChangePending = null;
+    if (!pending) return;
+    api.lsp.didChange(pending.filePath, pending.text).catch(() => {});
+  }, 250);
+}
+/**
+ * Перерисовать список недавних проектов на стартовом экране.
+ *
+ * Показываем только реальные, ещё существующие папки: записи, которые никуда
+ * не ведут, вычищаются из хранилища. Если живых нет — блок не показываем
+ * вовсе, а не рисуем пустые заглушки.
+ */
+async function refreshWelcomeRecent() {
+  const host = document.getElementById('welcome-recent');
+  if (!host) return;
+
+  let list = readRecents(localStorage).slice(0, RECENT_LIMIT);
+
+  if (list.length > 0) {
+    const alive = await api.recents.filter(list).catch(() => list);
+
+    if (alive.length !== list.length) {
+      writeRecents(localStorage, alive);
+    }
+
+    list = alive.slice(0, RECENT_LIMIT);
+  }
+
+  host.innerHTML = '';
+
+  if (list.length === 0) {
+    host.classList.add('hidden');
+    return;
+  }
+
+  host.classList.remove('hidden');
+
+  const title = document.createElement('div');
+  title.className = 'welcome-recent-title';
+  title.textContent = t('welcome.recent');
+  host.appendChild(title);
+
+  list.forEach((project) => {
+    const item = document.createElement('button');
+    item.className = 'recent-item';
+    item.type = 'button';
+
+    const name = document.createElement('span');
+    name.className = 'recent-name';
+    name.textContent = project.name;
+
+    const path = document.createElement('span');
+    path.className = 'recent-path';
+    path.textContent = project.path;
+
+    item.appendChild(name);
+    item.appendChild(path);
+    item.onclick = () => withBusy(() => openRecentProject(project.path));
+
+    host.appendChild(item);
+  });
+}
+
+/** Запомнить проект в списке недавних. */
+function rememberRecent(payload) {
+  if (!payload || !payload.path) return;
+
+  const list = addRecent(readRecents(localStorage), {
+    path: payload.path,
+    name: payload.name,
+  });
+
+  writeRecents(localStorage, list);
+  refreshWelcomeRecent();
+}
+
+/** Убрать запись, которая больше не открывается. */
+function forgetRecent(projectPath) {
+  writeRecents(localStorage, removeRecent(readRecents(localStorage), projectPath));
+  refreshWelcomeRecent();
+}
+
+/** Открыть проект из списка недавних. */
+async function openRecentProject(projectPath) {
+  try {
+    const payload = await api.workspace.load(projectPath);
+
+    if (!payload) {
+      log(t('welcome.recentMissing', { path: projectPath }), 'warn');
+      forgetRecent(projectPath);
+      return;
+    }
+
+    const known = state.projects.find((item) => item.path === payload.path);
+    if (known) {
+      await switchProject(payload.path);
+      return;
+    }
+
+    await openProjectTab(payload);
+    logHead(t('log.projectOpened', { path: payload.path }));
+  } catch (error) {
+    log(t('welcome.recentFailed', { error: error.message }), 'error');
+    forgetRecent(projectPath);
+  }
+}
 function applyWorkspace(payload, options = {}) {
   state.workspace = payload;
+
+  // Любой способ открыть проект (кнопка, недавние, перетаскивание) проходит
+  // через эту функцию, поэтому список недавних ведём здесь.
+  rememberRecent(payload);
   if (!options.silent) state.expanded = new Set([payload.tree.path]);
+
+  // Иконка, сохранённая в настройках проекта, должна подхватиться сразу:
+  // иначе после перезапуска сборка пойдёт без неё.
+  api.projectSettings
+    .read(payload.path)
+    .then((settings) => {
+      state.appIcon = settings.icon || null;
+      if (settings.icon) log(t('icon.restored'), 'dim');
+    })
+    .catch(() => {
+      /* настройки не критичны для работы */
+    });
 
   $('project-name').textContent = payload.name;
 
@@ -1166,6 +1309,11 @@ function askConfirm(title, body, okKey = 'common.yes') {
 
 async function handleBuildClick() {
   if (state.workspace) {
+    // Проект на Objective-C без Package.swift собирается отдельным конвейером:
+    // Swift для iOS 6 не существует, поэтому xtool здесь не поможет.
+    const legacy = await api.ios6.detect(state.workspace.path).catch(() => false);
+    if (legacy) return handleBuildIos6();
+
     // Проект Xcode сам по себе xtool не соберёт: у него нет Package.swift.
     // Предлагаем конвертацию сразу, иначе сборка упадёт с невнятной ошибкой.
     const path = state.workspace.path;
@@ -1179,6 +1327,44 @@ async function handleBuildClick() {
     return handleBuildFromSource();
   }
   return handleBuild();
+}
+
+/**
+ * Собрать проект на Objective-C под iOS 6.
+ *
+ * Swift здесь не участвует: язык требует iOS 7+, а устройства на iOS 6 —
+ * 32-битные armv7. Путь — clang + Apple ld64, собранный под Linux.
+ */
+async function handleBuildIos6() {
+  if (!state.workspace) return;
+
+  const tools = await api.ios6.available().catch(() => null);
+  if (!tools || !tools.sdk || !tools.linker) {
+    log(t('ios6.noToolchain'), 'error');
+    return;
+  }
+
+  logHead(t('ios6.building'));
+  setBusy(true);
+
+  try {
+    const result = await api.ios6.build({
+      projectPath: state.workspace.path,
+      appName: state.workspace.name,
+      distro: state.xtoolDistro,
+    });
+
+    if (!result || !result.ok) {
+      log(t('ios6.failed', { error: (result && result.error) || '—' }), 'error');
+      return;
+    }
+
+    log(t('ios6.done', { path: result.ipaPath }), 'ok');
+  } catch (error) {
+    log(t('ios6.failed', { error: error.message }), 'error');
+  } finally {
+    setBusy(false);
+  }
 }
 
 /**
@@ -1223,6 +1409,8 @@ async function handleProjectSettings() {
   }
 
   const current = await api.projectSettings.read(state.workspace.path);
+  // Путь к иконке: может быть выбран заново прямо в этом окне.
+  let iconPath = current.icon || state.appIcon || null;
 
   const answer = await modal({
     title: t('project.title'),
@@ -1238,14 +1426,47 @@ async function handleProjectSettings() {
         </label>
         <label class="wizard-row">
           <span>${esc(t('project.ios'))}</span>
-          <input id="set-ios" class="field-input wide" value="${esc(current.iosVersion || '17')}" autocomplete="off" spellcheck="false" />
+          <select id="set-ios" class="field-input wide">
+            ${IOS_CHOICES.map((version) => `<option value="${version}" ${String(current.iosVersion || '17').startsWith(String(version)) ? 'selected' : ''}>iOS ${version}</option>`).join('')}
+          </select>
         </label>
       </div>
+      <div class="section-title">${esc(t('icon.rowTitle'))}</div>
+      <div class="build-icon-row">
+        <div class="build-icon-preview" id="project-icon-preview">
+          ${iconPath ? `<img alt="" src="${esc(toFileUrl(iconPath))}">` : '<span>◈</span>'}
+        </div>
+        <div class="build-icon-text">
+          <strong>${esc(t('project.iconName'))}</strong>
+          <span id="project-icon-note">${esc(iconPath ? t('icon.chosenShort') : t('icon.rowHint'))}</span>
+        </div>
+        <button id="project-icon-choose" class="tb-btn small">${esc(t('icon.import'))}</button>
+      </div>
+      <div class="pkg-hint">${esc(t('project.iosHint'))}</div>
       <div class="pkg-hint">${esc(t('project.hint'))}</div>`,
     buttons: [
       { label: t('modal.save'), value: 'save', primary: true },
       { label: t('modal.cancel'), value: null },
     ],
+    // Иконку выбираем до сохранения: путь запоминаем и отдаём вместе с полями.
+    onRender: ({ root }) => {
+      const choose = root.querySelector('#project-icon-choose');
+      if (!choose) return;
+
+      choose.onclick = async () => {
+        const picked = await api.icon.choose();
+        if (!picked) return;
+
+        iconPath = picked;
+        state.appIcon = picked;
+
+        const preview = root.querySelector('#project-icon-preview');
+        if (preview) preview.innerHTML = `<img alt="" src="${esc(toFileUrl(picked))}">`;
+
+        const note = root.querySelector('#project-icon-note');
+        if (note) note.textContent = t('icon.chosenShort');
+      };
+    },
   });
 
   if (answer !== 'save') return;
@@ -1257,6 +1478,7 @@ async function handleProjectSettings() {
       name: read('set-name'),
       bundleId: read('set-bundle'),
       iosVersion: read('set-ios'),
+      icon: iconPath || undefined,
     });
 
     log(
@@ -1737,6 +1959,21 @@ async function handleNewProject() {
   const body = `
     <div class="wizard">
       <label class="wizard-row">
+        <span>${esc(t('wizard.platform'))}</span>
+        <select id="np-platform" class="field-input wide">
+          <option value="regular">${esc(t('wizard.platformRegular'))}</option>
+          <option value="ios6">${esc(t('wizard.platformLegacy'))}</option>
+        </select>
+      </label>
+
+      <label class="wizard-row" id="np-version-row">
+        <span>${esc(t('wizard.targetIos'))}</span>
+        <select id="np-version" class="field-input wide">
+          ${IOS_CHOICES.map((version) => `<option value="${version}" ${version === 17 ? 'selected' : ''}>iOS ${version}</option>`).join('')}
+        </select>
+      </label>
+
+      <label class="wizard-row" id="np-template-row">
         <span>${esc(t('wizard.template'))}</span>
         <select id="np-template" class="field-input wide">
           ${templates
@@ -1748,6 +1985,8 @@ async function handleNewProject() {
         </select>
       </label>
       <div id="np-desc" class="wizard-desc"></div>
+
+      <div id="np-legacy-note" class="wizard-preview hidden">${esc(t('wizard.legacyNote'))}</div>
 
       <label class="wizard-row">
         <span>${esc(t('wizard.name'))}</span>
@@ -1792,6 +2031,8 @@ async function handleNewProject() {
               name,
               bundleId: $('np-bundle').value.trim(),
               templateId: $('np-template').value,
+              platform: $('np-platform').value,
+              iosVersion: $('np-platform').value === 'ios6' ? '6.1' : $('np-version').value,
             });
             logHead(
               t('wizard.created', {
@@ -1856,6 +2097,23 @@ async function handleNewProject() {
           }
         }, 150);
       };
+
+      // Для iOS 6 шаблоны Swift не подходят: прячем их и показываем пояснение.
+      const platformSelect = root.querySelector('#np-platform');
+      const versionRow = root.querySelector('#np-version-row');
+      const templateRow = root.querySelector('#np-template-row');
+      const legacyNote = root.querySelector('#np-legacy-note');
+
+      const applyPlatform = () => {
+        const legacy = platformSelect.value === 'ios6';
+        versionRow.classList.toggle('hidden', legacy);
+        templateRow.classList.toggle('hidden', legacy);
+        desc.classList.toggle('hidden', legacy);
+        legacyNote.classList.toggle('hidden', !legacy);
+        updatePreview();
+      };
+
+      platformSelect.onchange = applyPlatform;
 
       templateSelect.onchange = updatePreview;
       [nameInput, bundleInput].forEach((input) => input.addEventListener('input', updatePreview));
@@ -3136,6 +3394,16 @@ async function handleSettings() {
         `<option value="ru" ${getLanguage() === 'ru' ? 'selected' : ''}>Русский</option>` +
         `</select></label>` +
         `<div class="wizard-preview">${esc(t('settings.languageHint'))}</div></div>` +
+        `<div class="section-title">${esc(t('settings.theme'))}</div>` +
+        `<div class="theme-row">` +
+        THEMES.map(
+          (theme) =>
+            `<button class="theme-swatch ${getTheme() === theme.id ? 'active' : ''}" data-theme-id="${theme.id}">` +
+            `<span class="theme-dot" style="background:${theme.swatch}"></span>` +
+            `<span class="theme-name">${esc(getLanguage() === 'ru' ? theme.labelRu : theme.label)}</span>` +
+            `</button>`,
+        ).join('') +
+        `</div>` +
         `<div class="section-title">${esc(t('settings.about'))}</div>` +
         `<p class="settings-hint">${esc(
           t('settings.version', {
@@ -3180,13 +3448,24 @@ async function handleSettings() {
         redraw(root);
       };
     }
+
+    // Тема применяется сразу: перерисовывать окно не нужно, меняются
+    // только переменные цветов.
+    root.querySelectorAll('.theme-swatch').forEach((swatch) => {
+      swatch.onclick = () => {
+        storeTheme(swatch.dataset.themeId);
+        root.querySelectorAll('.theme-swatch').forEach((other) => {
+          other.classList.toggle('active', other.dataset.themeId === swatch.dataset.themeId);
+        });
+      };
+    });
   };
 
   // Окно открываем сразу, а сведения об инструментах подтягиваем следом:
   // иначе нажатие кнопки выглядело как «ничего не происходит» несколько секунд.
   // Пока данных нет, значок загрузки стоит на месте таблицы.
   const pending = modal({
-    title: t('project.title'),
+    title: t('settings.title'),
     body: body(),
     buttons: [
       { label: t('settings.openRequirements'), value: 'requirements' },
@@ -3489,10 +3768,12 @@ async function saveAllFiles() {
   }
 
   let saved = 0;
+
   for (const tab of dirty) {
     try {
-      await api.file.write(tab.path, tab.content);
-      tab.dirty = false;
+      // Текст берём тем же способом, что и одиночное сохранение: у активной
+      // вкладки он в редакторе, у остальных — в сохранённом состоянии.
+      await saveTab(tab);
       saved += 1;
     } catch (error) {
       log(t('save.failed', { error: error.message }), 'error');
@@ -3549,7 +3830,19 @@ async function withBusy(work) {
   showBusy();
 
   // Даём кадру отрисоваться, иначе затемнение появится только после работы.
-  await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+  // Страховка по таймеру нужна для скрытого окна: там requestAnimationFrame
+  // не вызывается вовсе, и работа не начиналась бы никогда.
+  await new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+
+    requestAnimationFrame(() => setTimeout(done, 0));
+    setTimeout(done, 60);
+  });
 
   try {
     return await work();
@@ -4033,6 +4326,148 @@ function renderProblems() {
 
 // -------------------------------------------------------------------- события
 
+// ------------------------------------------------------------ размеры панелей
+
+/** Размеры панелей: загружаются один раз при старте и дальше живут в памяти. */
+const panelSizes = readSizes(localStorage);
+
+/** Применить размеры к CSS-переменным, по которым считает вёрстка. */
+function applyPanelSizes() {
+  const root = document.documentElement;
+
+  root.style.setProperty('--sidebar-w', `${panelSizes.sidebar}px`);
+  root.style.setProperty('--inspector-w', `${panelSizes.inspector}px`);
+  root.style.setProperty('--console-h', `${panelSizes.console}px`);
+}
+
+/**
+ * Повесить ручку на панель.
+ *
+ * Тянем мышью: ширина или высота пишется прямо в переменную, поэтому вёрстка
+ * пересчитывается на каждом движении. Двойной клик возвращает штатный размер.
+ *
+ * @param {'sidebar'|'inspector'|'console'} panel
+ * @param {Element|null} host
+ * @param {{axis?: 'x'|'y'}} [options]
+ */
+function installResizer(panel, host, options = {}) {
+  if (!host) return;
+
+  const axis = options.axis || 'x';
+  const handle = document.createElement('div');
+
+  handle.className = `panel-resizer panel-resizer-${axis}`;
+  handle.dataset.panel = panel;
+  host.appendChild(handle);
+  host.classList.add('panel-resizable');
+
+  handle.addEventListener('mousedown', (event) => {
+    event.preventDefault();
+
+    const start = axis === 'x' ? event.clientX : event.clientY;
+    const startSize = panelSizes[panel];
+
+    document.body.classList.add(axis === 'x' ? 'resizing-x' : 'resizing-y');
+
+    const move = (moveEvent) => {
+      const current = axis === 'x' ? moveEvent.clientX : moveEvent.clientY;
+      panelSizes[panel] = sizeAfterDrag(panel, startSize, current - start);
+      applyPanelSizes();
+    };
+
+    const stop = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', stop);
+      document.body.classList.remove('resizing-x', 'resizing-y');
+      writeSizes(localStorage, panelSizes);
+    };
+
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', stop);
+  });
+
+  handle.addEventListener('dblclick', () => {
+    panelSizes[panel] = resetSize(panel);
+    applyPanelSizes();
+    writeSizes(localStorage, panelSizes);
+  });
+}
+
+/** Развесить ручки по панелям и применить сохранённые размеры. */
+function initPanels() {
+  applyPanelSizes();
+
+  installResizer('sidebar', document.querySelector('.sidebar'), { axis: 'x' });
+  installResizer('console', document.querySelector('.console'), { axis: 'y' });
+  // Инспектор скрыт, пока не выбран файл, но ручка нужна заранее.
+  installResizer('inspector', document.getElementById('inspector'), { axis: 'x' });
+}
+
+// ------------------------------------------------------------ масштаб кода
+
+/** Текущий размер шрифта в редакторе; интерфейс масштаб не меняет. */
+let editorZoom = readZoom(localStorage);
+
+/** Применить масштаб к редактору. */
+function applyEditorZoom() {
+  document.documentElement.style.setProperty('--editor-font-size', `${editorZoom}px`);
+}
+
+/** Изменить масштаб на один шаг и запомнить результат. */
+function changeEditorZoom(direction) {
+  const next = nextZoom(editorZoom, direction);
+  if (next === editorZoom) return;
+
+  editorZoom = writeZoom(localStorage, next);
+  applyEditorZoom();
+}
+
+/** Сбросить масштаб к обычному. */
+function resetEditorZoom() {
+  editorZoom = writeZoom(localStorage, DEFAULT_ZOOM);
+  applyEditorZoom();
+}
+
+/**
+ * Ctrl + колесо меняет только текст в редакторе.
+ *
+ * Обработчик висит на области редактора, а не на окне: панели и консоль
+ * остаются в своих размерах, масштабируется лишь код.
+ */
+function initEditorZoom() {
+  applyEditorZoom();
+
+  const host = document.querySelector('.editor-area');
+  if (!host) return;
+
+  host.addEventListener(
+    'wheel',
+    (event) => {
+      if (!event.ctrlKey) return;
+
+      // Иначе Chromium ещё и сам масштабирует страницу.
+      event.preventDefault();
+      changeEditorZoom(event.deltaY < 0 ? 1 : -1);
+    },
+    { passive: false },
+  );
+
+  window.addEventListener('keydown', (event) => {
+    if (!event.ctrlKey) return;
+
+    if (event.key === '=' || event.key === '+') {
+      event.preventDefault();
+      changeEditorZoom(1);
+    } else if (event.key === '-' || event.key === '_') {
+      event.preventDefault();
+      changeEditorZoom(-1);
+    } else if (event.key === '0') {
+      event.preventDefault();
+      resetEditorZoom();
+    }
+  });
+}
+
 function wireEvents() {
   $('btn-open').onclick = handleOpenWorkspace;
 
@@ -4120,6 +4555,95 @@ function wireEvents() {
   $('btn-linux-run').onclick = () => runAutoSetup();
   $('btn-linux-refresh').onclick = () => withBusy(() => refreshLinux());
   $('btn-linux-help').onclick = showXtoolInfo;
+
+  // Старые iOS: состояние и установка инструментов прямо из панели. Это
+  // необязательная часть — без неё Fcode работает как обычно.
+  const refreshIos6 = async () => {
+    const status = $('ios6-status');
+    if (!status) return;
+
+    try {
+      const tools = await api.ios6.available();
+      if (tools.sdk && tools.linker) {
+        status.textContent = t('ios6.ready');
+        status.className = 'req-state ok';
+      } else {
+        status.textContent = tools.sdk ? t('ios6.needLinker') : t('ios6.needSdk');
+        status.className = 'req-state missing';
+      }
+    } catch (error) {
+      status.textContent = error.message;
+      status.className = 'req-state missing';
+    }
+
+    // Отдельно показываем, откуда возьмётся образ Xcode: путь выбирают вручную.
+    const hint = $('ios6-dmg-path');
+    if (!hint) return;
+
+    try {
+      const settings = await api.ios6.settings();
+      const lines = [];
+
+      if (settings.dmgPath) {
+        lines.push(t('ios6.dmgPath', { path: settings.dmgPath }));
+      } else {
+        lines.push(t('ios6.dmgMissing'));
+      }
+
+      // Отдельной строкой — куда распаковался SDK: если распаковка не удалась,
+      // это видно сразу, а не после ошибки сборки.
+      if (settings.sdkExists) {
+        lines.push(t('ios6.sdkPath', { path: settings.sdkPath }));
+      } else {
+        lines.push(t('ios6.sdkMissing'));
+      }
+
+      hint.textContent = lines.join(' · ');
+      hint.className = settings.sdkExists ? 'linux-section-hint ok' : 'linux-section-hint missing';
+    } catch (error) {
+      hint.textContent = error.message;
+      hint.className = 'linux-section-hint missing';
+    }
+  };
+
+  // Выбор образа Xcode 4.6.3: его нельзя скачать автоматически, только указать.
+  const chooseIos6Dmg = async () => {
+    try {
+      const chosen = await api.ios6.chooseDmg();
+      if (!chosen || !chosen.dmgPath) return;
+
+      log(t('ios6.dmgChosen', { path: chosen.dmgPath }), 'ok');
+      await refreshIos6();
+    } catch (error) {
+      log(t('ios6.failed', { error: error.message }), 'error');
+    }
+  };
+
+  const installIos6 = async () => {
+    const answer = await askConfirm(t('ios6.installTitle'), t('ios6.installBody'), 'ios6.install');
+    if (!answer) return;
+
+    logHead(t('ios6.installing'));
+    setBusy(true);
+
+    try {
+      const result = await api.ios6.setup({ distro: state.xtoolDistro });
+      if (result && result.ok) log(t('ios6.installed'), 'ok');
+      else log(t('ios6.failed', { error: (result && result.error) || '—' }), 'error');
+    } catch (error) {
+      log(t('ios6.failed', { error: error.message }), 'error');
+    } finally {
+      setBusy(false);
+      await refreshIos6();
+    }
+  };
+
+  const ios6Dmg = $('btn-ios6-dmg');
+  if (ios6Dmg) ios6Dmg.onclick = chooseIos6Dmg;
+
+  const ios6Install = $('btn-ios6-install');
+  if (ios6Install) ios6Install.onclick = installIos6;
+  refreshIos6();
   $('btn-account').onclick = handleAccount;
   $('btn-xcode-project').onclick = handleXcodeProject;
   $('btn-zsign').onclick = handleZsign;
@@ -4356,10 +4880,10 @@ async function boot() {
         tab.dirty = true;
         renderTabs();
       }
-      // Сообщаем языковому серверу об изменении — иначе он отстанет.
-      if (state.lspRunning) {
-        api.lsp.didChange(tab.path, text).catch(() => {});
-      }
+      // Сообщаем языковому серверу об изменении — иначе диагностика отстанет.
+      // Отправляем с задержкой: на каждый символ гонять весь документ в WSL
+      // слишком дорого, а ошибки всё равно нужны с небольшой паузой.
+      if (state.lspRunning) scheduleDidChange(tab.path, text);
     },
       diagnostics: () => activeDiagnostics(),
     complete: (context) => lspComplete(context),
@@ -4369,6 +4893,8 @@ async function boot() {
   const language = loadStoredLanguage();
   setLanguage(language);
   applyStaticTranslations();
+  // Список недавних проектов рисуем сразу: он лежит под кнопками старта.
+  refreshWelcomeRecent();
   // Переключатель языка живёт в настройках, здесь только применяем сохранённый.
 
   // Сведения о программе нужны окну настроек: версия, Electron, Node.
@@ -4393,6 +4919,8 @@ async function boot() {
   window.__fcode = {
     state,
     editor: () => editor,
+    // Нужно проверкам: открыть файл по пути, не прокликивая дерево.
+    openPath: (filePath) => openPath(filePath),
     signIn: () => startSignIn(),
     renderProjects,
     switchProject,
@@ -4403,8 +4931,12 @@ async function boot() {
   };
 
   wireEvents();
+  initPanels();
+  initEditorZoom();
   // Подставляем PNG-иконки; если файлов ещё нет, останутся текстовые символы.
   mountIcons();
+  // Тема применяется до первой отрисовки, чтобы не мигало фиолетовым.
+  applyTheme();
   showWelcome(true);
   setStatusKey('status.ready');
 

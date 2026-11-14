@@ -360,6 +360,16 @@ async function zipDirectory(sourceDir, outPath, options = {}) {
     for (const dirent of dirents) {
       const full = path.join(dir, dirent.name);
       const name = prefix ? `${prefix}/${dirent.name}` : dirent.name;
+
+      // Отбор содержимого: для .ipa нужен только каталог Payload, а рядом
+      // в рабочей папке лежат объектные файлы и прочий мусор.
+      if (typeof options.include === 'function' && !options.include(name)) {
+        if (dirent.isDirectory() && options.include(`${name}/`)) {
+          await walk(full, name);
+        }
+        continue;
+      }
+
       const stat = fs.lstatSync(full);
       if (stat.isSymbolicLink()) {
         writer.addSymlink(name, fs.readlinkSync(full), stat.mtime);

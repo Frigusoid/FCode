@@ -232,7 +232,7 @@ class LspClient {
 
     // Уведомление.
     if (message.method === 'textDocument/publishDiagnostics') {
-      const diagnostics = (message.params.diagnostics || []).map((item) => ({
+      const all = (message.params.diagnostics || []).map((item) => ({
         path: uriToWindowsPath(message.params.uri),
         message: item.message,
         severity: ['error', 'warning', 'info', 'hint'][item.severity - 1] || 'info',
@@ -242,6 +242,23 @@ class LspClient {
         endCharacter: item.range.end.character,
         source: item.source || 'sourcekit-lsp',
       }));
+
+      // sourcekit-lsp работает в Linux и про iOS-фреймворки ничего не знает:
+      // SwiftUI, UIKit и прочее лежат только в iOS SDK, поэтому сервер честно
+      // сообщает «no such module». Настоящая сборка идёт с этим SDK и такие
+      // модули находит, так что показывать эти «ошибки» нельзя — они пугают
+      // и не имеют отношения к коду.
+      const diagnostics = all.filter((item) => !isMissingAppleModule(item.message));
+
+      const hidden = all.length - diagnostics.length;
+      if (hidden > 0 && !this.reportedAppleModules) {
+        this.reportedAppleModules = true;
+        this.onLog(
+          'sourcekit-lsp не видит iOS-модули (SwiftUI, UIKit и т. п.): '
+          + `${hidden} такую ошибку скрыл. Сборка проверяет их сама.\n`,
+        );
+      }
+
       this.onDiagnostics({
         uri: message.params.uri,
         path: uriToWindowsPath(message.params.uri),
@@ -424,4 +441,46 @@ class LspClient {
   }
 }
 
-module.exports = { LspClient, toWslPath, toFileUri, uriToWindowsPath, languageIdFor };
+/**
+ * Модули, которые есть только в Apple SDK.
+ *
+ * sourcekit-lsp работает в Linux и про них ничего не знает, поэтому сообщает
+ * «no such module». Настоящая сборка идёт с iOS SDK и такие модули находит —
+ * значит эти диагностики ложные и показывать их нельзя.
+ */
+const APPLE_ONLY_MODULES = new Set([
+  'SwiftUI', 'UIKit', 'AppKit', 'Combine', 'CoreData', 'CoreGraphics',
+  'CoreImage', 'CoreLocation', 'CoreML', 'CoreMotion', 'AVFoundation',
+  'AVKit', 'MapKit', 'WebKit', 'StoreKit', 'Photos', 'PhotosUI',
+  'UserNotifications', 'WidgetKit', 'ActivityKit', 'ClockKit', 'WatchKit',
+  'CarPlay', 'ARKit', 'RealityKit', 'SceneKit', 'SpriteKit', 'Metal',
+  'MetalKit', 'MetalPerformanceShaders', 'CryptoKit', 'SwiftData',
+  'Charts', 'MessageUI', 'Contacts', 'ContactsUI', 'EventKit',
+  'HealthKit', 'HomeKit', 'Intents', 'NetworkExtension', 'PassKit',
+  'QuickLook', 'SafariServices', 'Security', 'Speech',
+  'SystemConfiguration', 'VideoToolbox', 'Vision', 'CoreAudio',
+  'CoreBluetooth', 'CoreHaptics', 'CoreNFC', 'CoreTelephony',
+]);
+
+/**
+ * Похоже ли сообщение на «нет такого Apple-модуля».
+ *
+ * @param {string} message текст диагностики
+ * @returns {boolean}
+ */
+function isMissingAppleModule(message) {
+  // swiftc пишет и «no such module», и «No such module» — регистр не важен.
+  const match = /no such module '([^']+)'/i.exec(String(message || ''));
+  if (!match) return false;
+  return APPLE_ONLY_MODULES.has(match[1]);
+}
+
+module.exports = {
+  LspClient,
+  toWslPath,
+  toFileUri,
+  uriToWindowsPath,
+  languageIdFor,
+  isMissingAppleModule,
+  APPLE_ONLY_MODULES,
+};

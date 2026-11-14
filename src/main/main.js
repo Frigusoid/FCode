@@ -8,13 +8,14 @@
  */
 
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 
 const workspace = require('./modules/workspace');
 const packager = require('./modules/packager');
+const ios6 = require('./modules/ios6');
 const { extractZip } = require('./modules/zip');
 const tools = require('./modules/tools');
 const xtool = require('./modules/xtool');
@@ -142,6 +143,21 @@ function registerHandlers() {
     });
     if (result.canceled || result.filePaths.length === 0) return null;
     return loadWorkspace(result.filePaths[0]);
+  });
+
+  // Недавние проекты: оставляем только те папки, что ещё существуют. Иначе на
+  // стартовом экране висят записи, которые никуда не ведут.
+  handle('recents:filter', (_event, list) => {
+    if (!Array.isArray(list)) return [];
+
+    return list.filter((item) => {
+      if (!item || typeof item.path !== 'string' || !item.path.trim()) return false;
+      try {
+        return fs.statSync(item.path).isDirectory();
+      } catch {
+        return false;
+      }
+    });
   });
 
   handle('workspace:load', (_event, dirPath) => loadWorkspace(dirPath));
@@ -826,6 +842,264 @@ function aboutInfo() {
     return { ok: result.ok, code: result.code };
   });
 
+  // --- сборка под старые iOS (6.x) на Objective-C ---------------------------
+  // Swift для iOS 6 невозможен (язык требует iOS 7+ и не умеет armv7), поэтому
+  // здесь отдельный конвейер: clang + портированный Apple ld64 + упаковка.
+  handle('ios6:detect', (_event, projectPath) => {
+    if (!projectPath) return false;
+    return ios6.isLegacyProject(projectPath);
+  });
+
+  handle('ios6:available', () => {
+    const toolchain = resolveIos6Toolchain();
+
+    return {
+      sdk: fs.existsSync(toolchain.sdk),
+      linker: fs.existsSync(toolchain.ld),
+      sdkPath: toolchain.sdk,
+      linkerPath: toolchain.ld,
+    };
+  });
+
+  // --- образ Xcode для iOS 6 -------------------------------------------------
+  // Пользователь скачивает .dmg вручную (страница Apple требует Apple ID),
+  // поэтому путь выбирается в интерфейсе и запоминается между запусками.
+  const ios6SettingsPath = () => path.join(app.getPath('userData'), 'ios6.json');
+
+  const readIos6Settings = () => {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(ios6SettingsPath(), 'utf8'));
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  };
+
+  const writeIos6Settings = (patch) => {
+    const next = { ...readIos6Settings(), ...patch };
+
+    try {
+      fs.mkdirSync(path.dirname(ios6SettingsPath()), { recursive: true });
+      fs.writeFileSync(ios6SettingsPath(), JSON.stringify(next, null, 2), 'utf8');
+    } catch {
+      /* не смогли сохранить — путь просто спросят снова */
+    }
+
+    return next;
+  };
+
+  // Где на самом деле лежит распакованный SDK.
+  //
+  // Раскладка образа зависит от версии Xcode: у кого-то `Xcode/Xcode.app/...`,
+  // у кого-то папка названа иначе. Поэтому сохранённый путь проверяем, а если
+  // его нет — ищем каталог iPhoneOS*.sdk в дереве.
+  //
+  // Корень тулчейна тоже не константа: по умолчанию это домашняя папка
+  // пользователя, а не диск разработчика.
+  const ios6Root = () => {
+    const saved = readIos6Settings().root;
+    return saved && String(saved).trim() ? String(saved).trim() : ios6.DEFAULT_ROOT;
+  };
+
+  const resolveIos6Sdk = () => {
+    // Сначала смотрим внутрь текущей папки тулчейна: там SDK, установленный
+    // этим экземпляром Fcode. Старый путь из настроек — только запасной, иначе
+    // на новой машине сборка тянулась бы к чужому диску.
+    const found = ios6.findSdk(path.join(ios6Root(), 'ios6-sdk'));
+    if (found) return found;
+
+    const saved = readIos6Settings().sdkPath;
+    if (saved && fs.existsSync(saved)) return saved;
+
+    return ios6.toolchainPaths(ios6Root()).sdk;
+  };
+
+  const resolveIos6Toolchain = () => ({
+    ...ios6.toolchainPaths(ios6Root()),
+    sdk: resolveIos6Sdk(),
+  });
+
+  /**
+   * Выложить установочные файлы на настоящий диск.
+   *
+   * В собранном приложении они лежат внутри app.asar, а WSL такие пути читать
+   * не умеет. Поэтому копируем скрипт и заглушку в папку профиля и запускаем
+   * уже оттуда.
+   */
+  const prepareIos6Installer = () => {
+    const source = path.join(__dirname, 'assets', 'ios6');
+    const target = path.join(app.getPath('userData'), 'ios6-installer');
+
+    const copyTree = (from, to) => {
+      fs.mkdirSync(to, { recursive: true });
+
+      for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+        const fromPath = path.join(from, entry.name);
+        const toPath = path.join(to, entry.name);
+
+        if (entry.isDirectory()) copyTree(fromPath, toPath);
+        else fs.copyFileSync(fromPath, toPath);
+      }
+    };
+
+    copyTree(source, target);
+    return path.join(target, 'setup.sh');
+  };
+
+  handle('ios6:settings', () => {
+    const current = readIos6Settings();
+
+    return {
+      dmgPath: ios6.findDmg({ saved: current.dmgPath }) || current.dmgPath || null,
+      savedDmgPath: current.dmgPath || null,
+      root: ios6Root(),
+      sdkPath: resolveIos6Sdk(),
+      sdkExists: fs.existsSync(resolveIos6Sdk()),
+    };
+  });
+
+  handle('ios6:chooseDmg', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Образ Xcode 4.6.3',
+      properties: ['openFile'],
+      filters: [{ name: 'Xcode image', extensions: ['dmg'] }],
+    });
+
+    if (result.canceled || result.filePaths.length === 0) return null;
+
+    const chosen = result.filePaths[0];
+    writeIos6Settings({ dmgPath: chosen });
+
+    return { dmgPath: chosen };
+  });
+
+  // Установка инструментов для iOS 6: SDK из образа Xcode 4.6.3 + ld64.
+  handle('ios6:setup', async (_event, options) => {
+    const settings = options || {};
+    // Корень тулчейна — домашняя папка пользователя (или сохранённый путь),
+    // а не фиксированный диск.
+    const root = ios6Root();
+    const sdkDir = path.join(root, 'ios6-sdk');
+    const sdkPath = ios6.toolchainPaths(root).sdk;
+
+    const tell = (text) => send('xtool:output', { stream: 'build', text: `${text}\n` });
+
+    // 1. SDK: распаковываем из образа, если его ещё нет.
+    if (!fs.existsSync(sdkPath)) {
+      // Образ пользователь скачивает вручную: страница Apple требует входа в
+      // Apple ID. Путь из интерфейса важнее поиска по привычным местам.
+      const dmg = ios6.findDmg({
+        saved: readIos6Settings().dmgPath,
+        extra: settings.dmgPath ? [settings.dmgPath] : [],
+      });
+
+      if (!dmg) {
+        return {
+          ok: false,
+          error: 'не найден образ Xcode 4.6.3 (.dmg): нажмите «Образ Xcode…» и выберите файл',
+        };
+      }
+
+      const sevenZip = 'C:\\Program Files\\7-Zip\\7z.exe';
+      if (!fs.existsSync(sevenZip)) {
+        return { ok: false, error: 'нужен 7-Zip: C:\\Program Files\\7-Zip\\7z.exe' };
+      }
+
+      tell(`распаковываю SDK из ${dmg} (образ 1.6 ГБ, это займёт время)`);
+      fs.mkdirSync(sdkDir, { recursive: true });
+
+      const unpack = spawnSync(
+        sevenZip,
+        ['x', dmg, `-o${sdkDir}`, '-y', '-r', '*iPhoneOS6.1.sdk*'],
+        { encoding: 'utf8', windowsHide: true, timeout: 1800000 },
+      );
+
+      // Папка внутри образа может называться иначе, поэтому не проверяем
+      // жёсткий путь, а ищем каталог SDK в дереве.
+      const extracted = ios6.findSdk(sdkDir);
+
+      if (!extracted) {
+        const details = `${unpack.stdout || ''}${unpack.stderr || ''}`
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .slice(-3)
+          .join(' / ');
+
+        return {
+          ok: false,
+          error: unpack.error
+            ? `7-Zip: ${unpack.error.message}`
+            : `в образе не найден iPhoneOS*.sdk${details ? ` (${details})` : ''}`,
+        };
+      }
+
+      // Запоминаем, чтобы следующие сборки не искали заново.
+      writeIos6Settings({ sdkPath: extracted });
+      tell(`SDK: ${extracted}`);
+    }
+
+    // 2. Компилятор, blocks runtime, dispatch и ld64 — скриптом в WSL.
+    let script;
+    try {
+      script = prepareIos6Installer();
+    } catch (error) {
+      return { ok: false, error: `не удалось подготовить установщик: ${error.message}` };
+    }
+
+    tell('устанавливаю компилятор и ld64 (самая долгая часть)');
+
+    // Без -u: имя пользователя в WSL у каждого своё, поэтому работаем от того,
+    // кто в дистрибутиве по умолчанию.
+    const run = spawnSync(
+      'wsl.exe',
+      ['-d', settings.distro || xtool.DEFAULT_DISTRO, '--', 'bash', '-lc',
+        `ROOT="${ios6.toWslPath(root)}" bash "${ios6.toWslPath(script)}"`],
+      { encoding: 'utf8', windowsHide: true, timeout: 3600000 },
+    );
+
+    const output = `${run.stdout || ''}${run.stderr || ''}`.trim();
+    for (const line of output.split('\n').slice(-25)) tell(line);
+
+    if (run.status !== 0) {
+      const last = output.split('\n').filter(Boolean).pop();
+      return { ok: false, error: last || 'установка не удалась' };
+    }
+
+    return {
+      ok: true,
+      sdk: fs.existsSync(ios6.DEFAULT_TOOLCHAIN.sdk),
+      linker: fs.existsSync(ios6.DEFAULT_TOOLCHAIN.ld),
+    };
+  });
+
+  handle('ios6:build', async (_event, options) => {
+    if (!options || !options.projectPath) throw new Error(t('main.noProjectPath'));
+
+    const distro = options.distro || xtool.DEFAULT_DISTRO;
+
+    send('xtool:output', {
+      stream: 'meta',
+      text: `Сборка под iOS 6.1 (Objective-C), WSL ${distro}\n`,
+    });
+
+    const result = await ios6.build({
+      projectPath: options.projectPath,
+      appName: options.appName,
+      distro,
+      // Путь к SDK мог быть найден при распаковке образа — подставляем его,
+      // иначе сборка искала бы жёсткий путь.
+      toolchain: options.toolchain || resolveIos6Toolchain(),
+      onOutput: (text) => send('xtool:output', { stream: 'build', text }),
+    });
+
+    if (result.ok) {
+      send('ipa:progress', { phase: 'done', outputPath: result.ipaPath });
+    }
+
+    return result;
+  });
+
   handle('xtool:build', async (_event, options) => {
     if (!options || !options.projectPath) throw new Error(t('main.noProjectPath'));
     send('xtool:output', {
@@ -1078,7 +1352,10 @@ function aboutInfo() {
       lspClient = null;
     }
 
-    lspClient = new LspClient({
+    // Держим ссылку локально: пока идёт запуск, параллельный вызов может
+    // остановить клиент и обнулить lspClient, а обращение к нему после await
+    // падало с «Cannot read properties of null (reading 'open')».
+    const client = new LspClient({
       distro: options ? options.distro : undefined,
       projectPath: currentWorkspacePath,
       onLog: (text) => send('lsp:log', text),
@@ -1086,8 +1363,19 @@ function aboutInfo() {
       onStatus: (status) => send('lsp:status', status),
     });
 
-    await lspClient.start();
-    return { running: lspClient.open, project: currentWorkspacePath };
+    lspClient = client;
+
+    try {
+      await client.start();
+    } catch (error) {
+      if (lspClient === client) lspClient = null;
+      throw error;
+    }
+
+    // Если за время запуска клиент успели заменить или остановить, честно
+    // сообщаем, что он не работает, вместо падения на null.
+    const current = lspClient === client && client.open;
+    return { running: Boolean(current), project: currentWorkspacePath };
   });
 
   handle('lsp:stop', () => {

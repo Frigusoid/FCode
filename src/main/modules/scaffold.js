@@ -15,6 +15,7 @@
 const fs = require('fs');
 const path = require('path');
 const { t } = require('../../shared/i18n');
+const versions = require('../../shared/ios-versions');
 
 /** Имя пакета: xtool разрешает [a-zA-Z_] в начале и [a-zA-Z0-9_-] далее. */
 function validateName(name) {
@@ -276,6 +277,62 @@ public enum ${ctx.module} {
   },
 ];
 
+/**
+ * Файлы проекта под iOS 6 — только Objective-C.
+ *
+ * Package.swift здесь не нужен: SwiftPM работает со Swift, а для iOS 6
+ * Fcode вызывает clang и Apple ld64 сам (см. modules/ios6.js). Info.plist
+ * лежит в корне — конвейер подхватывает его как есть.
+ */
+function legacyFiles({ name, module, bundleId }) {
+  return {
+    'main.m': `#import <UIKit/UIKit.h>
+
+@interface AppDelegate : UIResponder <UIApplicationDelegate>
+@property (nonatomic, strong) UIWindow *window;
+@end
+
+@implementation AppDelegate
+
+- (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)options {
+  self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
+
+  UILabel *label = [[UILabel alloc] initWithFrame:self.window.bounds];
+  label.text = @"${name}";
+  label.textAlignment = NSTextAlignmentCenter;
+  label.font = [UIFont boldSystemFontOfSize:28];
+
+  [self.window addSubview:label];
+  [self.window makeKeyAndVisible];
+  return YES;
+}
+
+@end
+
+int main(int argc, char *argv[]) {
+  @autoreleasepool {
+    return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));
+  }
+}
+`,
+    'Info.plist': `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key><string>${name}</string>
+  <key>CFBundleIdentifier</key><string>${bundleId}</string>
+  <key>CFBundleName</key><string>${name}</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>MinimumOSVersion</key><string>6.1</string>
+  <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
+</dict>
+</plist>
+`,
+  };
+}
+
 function templateById(id) {
   return TEMPLATES.find((item) => item.id === id) || TEMPLATES[0];
 }
@@ -303,11 +360,27 @@ function createProject(options) {
     throw new Error(t('scaffold.alreadyExists', { path: projectDir }));
   }
 
-  const ctx = { name, module, bundleId: bundle.value, template: template.id };
-  const files = template.build(ctx);
+  const ctx = { name, module, bundleId: bundle.value, template: template.id, platform: options.platform };
+  // Старые iOS собираются только на Objective-C: Swift требует iOS 7+ и не
+  // умеет 32-битный ARM, поэтому для них отдельный набор файлов.
+  const files =
+    options.platform === 'ios6'
+      ? legacyFiles({ name, module, bundleId: bundle.value })
+      : template.build(ctx);
+
+  // Версию iOS выбирают в мастере: подставляем её в манифест, не пересобирая
+  // шаблон. В манифест идёт только мажорная версия — `.v17`, а не `.v17.0`:
+  // записи с минорной версией SwiftPM не знает, и проект перестаёт собираться.
+  const iosVersion = versions.normalizeIosVersion(options.iosVersion);
+  if (files['Package.swift'] && iosVersion) {
+    files['Package.swift'] = files['Package.swift'].replace(
+      /\.iOS\(\.v\d+(?:\.\d+)?\)/,
+      `.iOS(.v${iosVersion})`,
+    );
+  }
 
   // Файлы, общие для всех шаблонов.
-  if (template.id !== 'library') {
+  if (template.id !== 'library' && options.platform !== 'ios6') {
     files['xtool.yml'] = `version: 1
 bundleID: ${bundle.value}
 `;

@@ -144,6 +144,9 @@
                 </button>
               </div>
 
+              <!-- Последние открытые проекты: не больше шести. -->
+              <div id="welcome-recent" class="welcome-recent hidden"></div>
+
               <div class="welcome-note">
                 <strong data-i18n="welcome.whatTitle">What Fcode does by itself:</strong>
                 <span data-i18n-html="welcome.whatBody"></span>
@@ -208,6 +211,17 @@
             <button class="link-btn" data-section="account" data-i18n="linux.link.account">Account</button>
             <button id="btn-setup-guide" class="link-btn" data-i18n="guide.more">How to install</button>
             <button id="btn-about" class="link-btn" data-i18n="about.menu">About</button>
+          </div>
+
+          <!-- Старые iOS: необязательная часть, поэтому отдельным блоком. -->
+          <div class="linux-section">
+            <div class="linux-section-title" data-i18n="ios6.section">iOS 6 (optional)</div>
+            <div class="linux-section-row">
+              <span id="ios6-status" class="req-state">…</span>
+              <button id="btn-ios6-install" class="tb-btn small" data-i18n="ios6.install">Install toolchain</button>
+              <button id="btn-ios6-dmg" class="tb-btn small" data-i18n="ios6.chooseDmg">Xcode image…</button>
+            </div>
+            <div id="ios6-dmg-path" class="linux-section-hint"></div>
           </div>
 
           <!-- Кнопки инструментов живут в меню «Project» на панели сверху,

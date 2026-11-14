@@ -77,6 +77,11 @@ contextBridge.exposeInMainWorld('fcode', {
     refresh: () => call('workspace:refresh'),
   },
 
+  // Список недавних проектов: main проверяет, что папки ещё существуют.
+  recents: {
+    filter: (list) => call('recents:filter', list),
+  },
+
   file: {
     read: (filePath) => call('file:read', filePath),
     save: (filePath, text) => call('file:save', filePath, text),
@@ -237,6 +242,16 @@ contextBridge.exposeInMainWorld('fcode', {
     terminal: (command, distro) => call('xtool:terminal', command, distro),
     runAll: (options) => call('xtool:autoSetup', options),
     isElevated: () => call('xtool:elevated'),
+  },
+
+  // Сборка под старые iOS (6.x) на Objective-C: отдельный конвейер.
+  ios6: {
+    detect: (projectPath) => call('ios6:detect', projectPath),
+    build: (options) => call('ios6:build', options),
+    available: () => call('ios6:available'),
+    setup: (options) => call('ios6:setup', options),
+    settings: () => call('ios6:settings'),
+    chooseDmg: () => call('ios6:chooseDmg'),
   },
 
   icon: {
